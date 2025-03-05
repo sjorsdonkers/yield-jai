@@ -46,11 +46,11 @@ basic_state_machine :: () {
         return 17;
     }
     // costating :: (self: *COROUTINE) -> status: Co_Status, s64 {
-    //     case 0;        {
+    //     if self.position == {
+    //     case 0;
     //         self.position = 1;
     //         return .YIELD, 5;
-    //     }
-    //     case 1;        {
+    //     case 1;
     //         self.position = 0;
     //         return .RETURN, 17;
     //     }
@@ -75,13 +75,13 @@ locals :: () {
         return local;
     }
     // colocal :: (self: *COROUTINE) -> status: Co_Status, s64 {
-    //     case 0;        {
-    //         self.local = 42;
+    //     if self.position == {
+    //     case 0;
+    //         self.state.local = 42;
     //         self.position = 1;
     //         return .YIELD, self.local;
-    //     }
-    //     case 1;        {
-    //         self.local += 1;
+    //     case 1;
+    //         self.state.local += 1;
     //         self.position = 0;
     //         return .RETURN, self.local;
     //     }

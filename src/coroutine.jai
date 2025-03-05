@@ -87,6 +87,9 @@ into_yielding :: ($code: Code) -> Coroutinator #compile_time {
 
                     continue;
                 }
+            case .DECLARATION;
+                array_add(*statements, convert_declaration_to_assignment(it.(*Code_Declaration)));
+                continue; // TODO compound declarations
             }
             array_add(*statements, it);
         }
@@ -99,6 +102,22 @@ into_yielding :: ($code: Code) -> Coroutinator #compile_time {
 
         array_add(*top_statements, default_return(original_returns));
         header.body_or_null.block.statements = top_statements;
+
+        // Replace all local variables with self.state.local
+        self_state := compiler_get_nodes(#code self.state);
+        for header.body_or_null.block.members {
+            ident := New(Code_Ident);
+            ident.name = it.name;
+
+            dot := New(Code_Binary_Operator);
+            dot.kind = .BINARY_OPERATOR;
+            dot.operator_type = #char ".";
+            dot.left = self_state;
+            dot.right = ident;
+
+            replace_all_ident(header.body_or_null.block, it.name, dot);
+        }
+
 
         // Debug
         debug_builder: String_Builder;
@@ -220,6 +239,26 @@ convert_yield_to_return :: (yield_call: *Code_Procedure_Call) -> *Code_Return {
     return yield_node;
 }
 
+// Change `local := 42` to `local = 42`
+convert_declaration_to_assignment :: (declaration: *Code_Declaration) -> *Code_Node {
+    if declaration.flags & .IS_CONSTANT {
+        return declaration;
+    }
+    assert(declaration.name != "");
+    assert(declaration.expression != null);
+
+    ident := New(Code_Ident);
+    ident.name = declaration.name;
+
+    assignment := New(Code_Binary_Operator);
+    assignment.kind = .BINARY_OPERATOR;
+    assignment.operator_type = #char "=";
+    assignment.left = ident;
+    assignment.right = declaration.expression;
+
+    return assignment;
+}
+
 extract_output :: ($code: Code) -> Type #compile_time {
     root, nodes := compiler_get_nodes(code);
     assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
@@ -304,3 +343,5 @@ yield :: (return_value: s64) #expand {
 #import "Basic";
 #import "Compiler";
 #import "Program_Print";
+
+#load "code_visit.jai";
