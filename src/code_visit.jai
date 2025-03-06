@@ -266,8 +266,6 @@ get_recursive_nodes_breadth_first :: (node: **Code_Node, pointers: *[..] **Code_
     array_add(pointers, node);
 
     while cursor < pointers.count {
-        print("%", cursor);
-        if cursor == 19 log("\n %", pointers.*[cursor].*);
         sub := pointers.*[cursor].*;
         get_subexpressions(sub, pointers);
         cursor += 1;
