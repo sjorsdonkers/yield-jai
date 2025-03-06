@@ -27,8 +27,6 @@ into_yielding :: ($code: Code) -> Coroutinator #compile_time {
     State  :: #run extract_state(code);
     Output :: #run extract_output(code);
 
-    // adapt code
-    // First an implementation without State, only yields
     new_code := #run -> Code {
         root, nodes := compiler_get_nodes(code);
         assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
@@ -56,8 +54,9 @@ into_yielding :: ($code: Code) -> Coroutinator #compile_time {
             header.returns = returns;
         }
 
-        loop_node, cases_block := position_switch_node();
         top_statements: [..]*Code_Node;
+        array_add(*top_statements, compiler_get_nodes(#code using self.state;));
+        loop_node, cases_block := position_switch_node();
         array_add(*top_statements, loop_node);
 
         cases: [..]*Code_Node;
@@ -103,22 +102,6 @@ into_yielding :: ($code: Code) -> Coroutinator #compile_time {
         array_add(*top_statements, default_return(original_returns));
         header.body_or_null.block.statements = top_statements;
 
-        // Replace all local variables with self.state.local
-        self_state := compiler_get_nodes(#code self.state);
-        for header.body_or_null.block.members {
-            ident := New(Code_Ident);
-            ident.name = it.name;
-
-            dot := New(Code_Binary_Operator);
-            dot.kind = .BINARY_OPERATOR;
-            dot.operator_type = #char ".";
-            dot.left = self_state;
-            dot.right = ident;
-
-            replace_all_ident(header.body_or_null.block, it.name, dot);
-        }
-
-
         // Debug
         debug_builder: String_Builder;
         print_expression(*debug_builder, root);
@@ -126,8 +109,6 @@ into_yielding :: ($code: Code) -> Coroutinator #compile_time {
 
         return compiler_get_code(root);
     }
-
-
     return Coroutinator.{Coroutine(State, Output), new_code};
 }
 
