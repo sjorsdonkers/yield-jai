@@ -3,6 +3,7 @@ main :: () {
     yield_constantly();
     basic_state_machine();
     locals();
+    nested_block();
 }
 
 return_only :: () {
@@ -96,6 +97,50 @@ locals :: () {
     status, result  = next(*yielding);
     print("local return: %\n", result);
     assert(status == .RETURN && result == 43);
+}
+
+nested_block :: () {
+    block :: () -> s64 {
+        local:= 42;
+        {
+            local += 2;
+            {
+                yield(local);
+                local += 1;
+            }
+        }
+        return local;
+    }
+    // coblock :: (self: *COROUTINE) -> status: Co_Status, s64 {
+    //     using self.state;
+    //     if self.position == {
+    //     case 0;
+    //         local = 42;
+    //         {
+    //             local += 2;
+    //             {
+    //                 self.position = 1;
+    //                 return .YIELD, self.local;
+    //             }
+    //         }
+    //     case 1;
+    //         {
+    //             local += 1;
+    //         }
+    //         self.position = 0;
+    //         return .RETURN, self.local;
+    //     }
+    // }
+    YieldProc :: #run,stallable into_yielding(code_of(block));
+    yielding := init(YieldProc);
+
+    status, result := next(*yielding);
+    print("local yield : %\n", result);
+    assert(status == .YIELD && result == 44);
+
+    status, result  = next(*yielding);
+    print("local return: %\n", result);
+    assert(status == .RETURN && result == 45);
 }
 
 #scope_file

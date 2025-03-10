@@ -1,3 +1,9 @@
+logx :: (root: *Code_Node) {
+    debug_builder: String_Builder;
+    print_expression(*debug_builder, root);
+    log("%", builder_to_string(*debug_builder));
+}
+
 Co_Status :: enum { YIELD; RETURN; IMPLEMENTATION_ERROR; }
 Coroutine :: struct (State: Type, Output: Type) {
     state   : State;
@@ -66,36 +72,24 @@ into_yielding :: ($code: Code) -> Coroutinator #compile_time {
 
         statements: [..] *Code_Node;
         assert(header.body_or_null != null);
-        for header.body_or_null.block.statements {
-            if it.kind == {
-            case .RETURN;
-                array_add(*statements, set_position_node(0));
-                array_add(*statements, return_with_costatus(it.(*Code_Return)));
-                continue;
-            case .PROCEDURE_CALL;
-                call := it.(*Code_Procedure_Call);
-                if call.procedure_expression.kind == .IDENT
-                && "yield" == call.procedure_expression.(*Code_Ident).name {
-                    array_add(*statements, set_position_node(next_position));
-                    array_add(*statements, convert_yield_to_return(call));
 
-                    current_case_block.statements = statements;
-                    statements = [..]*Code_Node.{};
-                    current_case_block = add_case(*cases, next_position);
-                    next_position += 1;
-
-                    continue;
-                }
-            case .DECLARATION;
-                array_add(*statements, convert_declaration_to_assignment(it.(*Code_Declaration)));
-                continue; // TODO compound declarations
+        sub_block := Block_Process.{header.body_or_null.block, 0, null};
+        while sub_block.statement_index < sub_block.original.statements.count {
+            new_block, exit := process_block(*sub_block, *next_position);
+            if new_block.statements.count > 0 { // TODO change to 1 when we insert using statement? assert?
+                array_add(*statements, ..new_block.statements);
             }
-            array_add(*statements, it);
+            if exit != .END {
+                current_case_block.statements = statements;
+                statements = [..]*Code_Node.{};
+                current_case_block = add_case(*cases, next_position);
+                next_position += 1;
+            }
         }
-        if statements.count > 0 {
-            current_case_block.statements = statements;
-        } else {
+        if statements.count == 0 {
             cases.count -= 1;
+        } else {
+            current_case_block.statements = statements;
         }
         cases_block.statements  = cases;
 
@@ -103,13 +97,74 @@ into_yielding :: ($code: Code) -> Coroutinator #compile_time {
         header.body_or_null.block.statements = top_statements;
 
         // Debug
-        debug_builder: String_Builder;
-        print_expression(*debug_builder, root);
-        log("%", builder_to_string(*debug_builder));
+        logx(root);
 
         return compiler_get_code(root);
     }
     return Coroutinator.{Coroutine(State, Output), new_code};
+}
+
+Block_Exit :: enum { END; RETURN; YIELD; }
+
+Block_Process :: struct {
+    original: *Code_Block;
+    statement_index := 0;
+    current_sub_block: *Block_Process; // can be null
+}
+
+process_block :: (original: *Block_Process, next_position: *s64) -> *Code_Block, Block_Exit { //original_block to take statements from should modify this such that remaining statements can be put into the next positions block)
+    new_block := New(Code_Block);
+    new_block.* = original.original.*;
+
+    statements : [..]*Code_Node;
+
+    for original.statement_index..original.original.statements.count-1 {
+        original.statement_index += 1; // Usually we want to increment, sometimes we reverse this for cases like BLOCK
+        stmnt := original.original.statements[it];
+
+        if stmnt.kind == {
+        case .RETURN;
+            array_add(*statements, set_position_node(0));
+            array_add(*statements, return_with_costatus(stmnt.(*Code_Return)));
+
+            new_block.statements = statements;
+            return new_block, .RETURN;
+        case .PROCEDURE_CALL;
+            call := stmnt.(*Code_Procedure_Call);
+            if call.procedure_expression.kind == .IDENT
+            && "yield" == call.procedure_expression.(*Code_Ident).name {
+                array_add(*statements, set_position_node(next_position.*));
+                array_add(*statements, convert_yield_to_return(call));
+
+                new_block.statements = statements;
+                return new_block, .YIELD;
+            }
+        case .DECLARATION;
+            array_add(*statements, convert_declaration_to_assignment(stmnt.(*Code_Declaration)));
+            continue; // TODO compound declarations
+        case .BLOCK;
+            if original.current_sub_block == null {
+                original.current_sub_block = New(Block_Process);
+                original.current_sub_block.original = stmnt.(*Code_Block);
+            }
+
+            sub_block, sub_exit := process_block(original.current_sub_block, next_position);
+            if sub_block.statements.count > 0 { // TODO change to 1 when we insert using statement?
+                array_add(*statements, sub_block);
+            }
+
+            if original.current_sub_block.statement_index < original.current_sub_block.original.statements.count {
+                original.statement_index -= 1; // We are not be done with this block after this, so make sure we revisit it next time
+            }
+
+            new_block.statements = statements;
+            return new_block, sub_exit;
+        }
+        array_add(*statements, stmnt);
+    }
+
+    new_block.statements = statements;
+    return new_block, .END;
 }
 
 position_switch_node :: () -> *Code_Node, *Code_Block {
@@ -324,5 +379,3 @@ yield :: (return_value: s64) #expand {
 #import "Basic";
 #import "Compiler";
 #import "Program_Print";
-
-#load "code_visit.jai";
