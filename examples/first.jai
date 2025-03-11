@@ -10,7 +10,7 @@ return_only :: () {
     empty :: () -> s64 {
         return 3;
     }
-    // compty :: (self: *Coroutine(void, s64)) -> Co_Status, s64 {
+    // co_empty :: (self: *Coroutine(void, s64)) -> Co_Status, s64 {
     //     return .RETURN, 3;
     // }
 
@@ -28,7 +28,7 @@ yield_constantly :: () {
     always :: () -> s64 {
         yield(15);
     }
-    // coways :: (self: *Coroutine(void, s64)) -> Co_Status, s64 {
+    // co_always :: (self: *Coroutine(void, s64)) -> Co_Status, s64 {
     //     return .YIELD, 15;
     // }
 
@@ -46,7 +46,7 @@ basic_state_machine :: () {
         yield(5);
         return 17;
     }
-    // costating :: (self: *COROUTINE) -> status: Co_Status, s64 {
+    // co_stating :: (self: *COROUTINE) -> status: Co_Status, s64 {
     //     if self.position == {
     //     case 0;
     //         self.position = 1;
@@ -75,7 +75,7 @@ locals :: () {
         local += 1;
         return local;
     }
-    // colocal :: (self: *COROUTINE) -> status: Co_Status, s64 {
+    // co_stating :: (self: *COROUTINE) -> status: Co_Status, s64 {
     //     if self.position == {
     //     case 0;
     //         self.state.local = 42;
@@ -105,27 +105,44 @@ nested_block :: () {
         {
             local += 2;
             {
+                other := 1;
                 yield(local);
-                local += 1;
+                local += other;
             }
         }
         return local;
     }
-    // coblock :: (self: *COROUTINE) -> status: Co_Status, s64 {
+    // State :: struct {
+    //     local: s64;
+    //     block_1: struct {
+    //         block_1: struct {
+    //             other: s64;
+    //         };
+    //     };
+    // }
+
+    // co_block :: (self: *COROUTINE) -> status: Co_Status, s64 {
     //     using self.state;
     //     if self.position == {
     //     case 0;
     //         local = 42;
     //         {
+    //             using block_1;
     //             local += 2;
     //             {
+    //                 using block_1;
+    //                 other = 1;
     //                 self.position = 1;
     //                 return .YIELD, self.local;
     //             }
     //         }
     //     case 1;
     //         {
-    //             local += 1;
+    //             using block_1;
+    //             {
+    //                 using block_1;
+    //                 local += other;
+    //             }
     //         }
     //         self.position = 0;
     //         return .RETURN, self.local;

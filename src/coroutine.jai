@@ -62,6 +62,7 @@ into_yielding :: ($code: Code) -> Coroutinator #compile_time {
 
         top_statements: [..]*Code_Node;
         array_add(*top_statements, compiler_get_nodes(#code using self.state;));
+
         loop_node, cases_block := position_switch_node();
         array_add(*top_statements, loop_node);
 
@@ -73,10 +74,10 @@ into_yielding :: ($code: Code) -> Coroutinator #compile_time {
         statements: [..] *Code_Node;
         assert(header.body_or_null != null);
 
-        sub_block := Block_Process.{header.body_or_null.block, 0, null};
+        sub_block := Block_Process.{original = header.body_or_null.block};
         while sub_block.statement_index < sub_block.original.statements.count {
             new_block, exit := process_block(*sub_block, *next_position);
-            if new_block.statements.count > 0 { // TODO change to 1 when we insert using statement? assert?
+            if new_block.statements.count > 0 { // 0 since no using state statement
                 array_add(*statements, ..new_block.statements);
             }
             if exit != .END {
@@ -91,7 +92,7 @@ into_yielding :: ($code: Code) -> Coroutinator #compile_time {
         } else {
             current_case_block.statements = statements;
         }
-        cases_block.statements  = cases;
+        cases_block.statements = cases;
 
         array_add(*top_statements, default_return(original_returns));
         header.body_or_null.block.statements = top_statements;
@@ -109,7 +110,15 @@ Block_Exit :: enum { END; RETURN; YIELD; }
 Block_Process :: struct {
     original: *Code_Block;
     statement_index := 0;
-    current_sub_block: *Block_Process; // can be null
+    current_sub_block: *Block_Process; // Can be null
+    name: string;
+}
+
+using_state :: (name: string) -> *Code_Using {
+    root := compiler_get_nodes(#code using tmp;).(*Code_Using);
+    ident := root.expression.(*Code_Ident);
+    ident.name = name;
+    return root;
 }
 
 process_block :: (original: *Block_Process, next_position: *s64) -> *Code_Block, Block_Exit { //original_block to take statements from should modify this such that remaining statements can be put into the next positions block)
@@ -117,6 +126,7 @@ process_block :: (original: *Block_Process, next_position: *s64) -> *Code_Block,
     new_block.* = original.original.*;
 
     statements : [..]*Code_Node;
+    if original.name then array_add(*statements, using_state(original.name));
 
     for original.statement_index..original.original.statements.count-1 {
         original.statement_index += 1; // Usually we want to increment, sometimes we reverse this for cases like BLOCK
@@ -146,10 +156,11 @@ process_block :: (original: *Block_Process, next_position: *s64) -> *Code_Block,
             if original.current_sub_block == null {
                 original.current_sub_block = New(Block_Process);
                 original.current_sub_block.original = stmnt.(*Code_Block);
+                original.current_sub_block.name = tprint("block_%", original.statement_index - 1);
             }
 
             sub_block, sub_exit := process_block(original.current_sub_block, next_position);
-            if sub_block.statements.count > 0 { // TODO change to 1 when we insert using statement?
+            if sub_block.statements.count > 1 { // 1 for using state statement
                 array_add(*statements, sub_block);
             }
 
@@ -307,16 +318,22 @@ extract_output :: ($code: Code) -> Type #compile_time {
 extract_state :: ($code: Code) -> Type #compile_time {
     Co_state :: struct {
         #insert -> string {
-            root, nodes := compiler_get_nodes(code);
-            assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
+            root, nodes := compiler_get_nodes(code); assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
+            header := root.(*Code_Procedure_Header); assert(header.body_or_null != null);
 
-            header := root.(*Code_Procedure_Header);
-            assert(header.body_or_null != null);
-
-            builder: String_Builder;
-            for header.body_or_null.block.members {
-                print_to_builder(*builder, "%: %;\n", it.name, get_type(it.type));
+            print_block_members :: (builder: *String_Builder, block: *Code_Block) {
+                for block.members {
+                    print_to_builder(builder, "%: %;\n", it.name, get_type(it.type));
+                }
+                for block.statements if it.kind == .BLOCK {
+                    sub_block := it.(*Code_Block);
+                    print_to_builder(builder, "block_%: struct {\n", it_index); // The name is used to `using` the state in the procedure [also shadowing is allowed]
+                    print_block_members(builder, sub_block);
+                    print_to_builder(builder, "};\n");
+                }
             }
+            builder: String_Builder;
+            print_block_members(*builder, header.body_or_null.block);
             return builder_to_string(*builder);
         }
     }
