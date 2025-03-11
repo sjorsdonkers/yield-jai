@@ -14,7 +14,7 @@ return_only :: () {
     //     return .RETURN, 3;
     // }
 
-    YieldProc :: #run, stallable into_yielding(code_of(empty));
+    YieldProc :: #run,stallable into_yielding(empty);
     yielding := init(YieldProc);
     empty_calls := 0;
     for yielding {
@@ -32,7 +32,7 @@ yield_constantly :: () {
     //     return .YIELD, 15;
     // }
 
-    YieldProc :: #run, stallable into_yielding(code_of(always));
+    YieldProc :: #run,stallable into_yielding(always);
     yielding := init(YieldProc);
     for yielding {
         print("always 15: %\n", it);
@@ -56,7 +56,7 @@ basic_state_machine :: () {
     //         return .RETURN, 17;
     //     }
     // }
-    YieldProc :: #run,stallable into_yielding(code_of(stating));
+    YieldProc :: #run,stallable into_yielding(stating);
     yielding := init(YieldProc);
 
     status, result := next(*yielding);
@@ -87,7 +87,7 @@ locals :: () {
     //         return .RETURN, self.local;
     //     }
     // }
-    YieldProc :: #run,stallable into_yielding(code_of(stating));
+    YieldProc :: #run,stallable into_yielding(stating);
     yielding := init(YieldProc);
 
     status, result := next(*yielding);
@@ -148,7 +148,7 @@ nested_block :: () {
     //         return .RETURN, self.local;
     //     }
     // }
-    YieldProc :: #run,stallable into_yielding(code_of(block));
+    YieldProc :: #run,stallable into_yielding(block);
     yielding := init(YieldProc);
 
     status, result := next(*yielding);

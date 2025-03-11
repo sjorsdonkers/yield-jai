@@ -4,6 +4,23 @@ logx :: (root: *Code_Node) {
     log("%", builder_to_string(*debug_builder));
 }
 
+
+Coroutinator :: struct {
+    Coroutine: Type;
+    next : Code;
+}
+
+init :: ($yielding: Coroutinator) -> $COROUTINE #modify {
+    COROUTINE = yielding.Coroutine;
+    return true;
+} {
+    return.{next=#insert #run yielding.next};
+}
+
+yield :: (return_value: s64) #expand {
+    `return return_value;
+}
+
 Co_Status :: enum { YIELD; RETURN; IMPLEMENTATION_ERROR; }
 Coroutine :: struct (State: Type, Output: Type) {
     state   : State;
@@ -29,7 +46,11 @@ for_expansion :: (routine: Coroutine, body: Code, flags: For_Flags) #expand {
     }
 }
 
-into_yielding :: ($code: Code) -> Coroutinator #compile_time {
+into_yielding :: (proc: $T) -> Coroutinator #expand #compile_time {
+    return into_yielding_impl(code_of(proc));
+}
+
+into_yielding_impl :: ($code: Code) -> Coroutinator #compile_time {
     State  :: #run extract_state(code);
     Output :: #run extract_output(code);
 
@@ -339,58 +360,6 @@ extract_state :: ($code: Code) -> Type #compile_time {
     }
     return Co_state;
 }
-
-Coroutinator :: struct {
-    Coroutine: Type;
-    next : Code;
-}
-
-init :: ($yielding: Coroutinator) -> $COROUTINE #modify {
-    COROUTINE = yielding.Coroutine;
-    return true;
-} {
-    return.{next=#insert #run yielding.next};
-}
-
-gen :: () -> s64 {
-    iota := 0;
-    while true {
-        yield(iota);
-        iota += 1;
-    }
-}
-cogen :: (self: *Coroutine(s64, s64)) -> Co_Status, s64 {
-    a := 17.;
-    defer self.state += 1;
-    return .YIELD, self.state;
-}
-
-mynext :: (self: *Coroutine(s64, s64)) -> Co_Status, s64 {
-    for self.state..2 {
-        print("state: %\n", self.state);
-
-        output := self.state;
-        self.state += 1;
-        return .YIELD, output;
-    }
-    return .RETURN, -1;
-};
-
-my_proc :: () -> s64 {
-    for 0..2 {
-        print("it: %\n", it);
-        yield(it);
-    }
-    return -1;
-}
-
-
-
-yield :: (return_value: s64) #expand {
-    `return return_value;
-}
-
-// #add_context toml_custom_type_to_value := default_custom_type_to_value;
 
 #scope_file
 #import "Basic";
