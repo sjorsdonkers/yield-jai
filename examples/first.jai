@@ -1,9 +1,15 @@
+// TODO store the initial arguments in the coroutine state set from init call?
+// Other wise the original argument could get you inside an if branch that following arguments would not have gone too.
+
+// Eventually a proc transformed to yielding or have yield statements remove should have the same effect when executed till completion.
+
 main :: () {
     return_only();
     yield_constantly();
     basic_state_machine();
     locals();
     nested_block();
+    if_statement();
 }
 
 return_only :: () {
@@ -152,12 +158,76 @@ nested_block :: () {
     yielding := init(YieldProc);
 
     status, result := next(*yielding);
-    print("local yield : %\n", result);
+    print("nested yield : %\n", result);
     assert(status == .YIELD && result == 44);
 
     status, result  = next(*yielding);
-    print("local return: %\n", result);
+    print("nested return: %\n", result);
     assert(status == .RETURN && result == 45);
+}
+
+
+if_statement :: () {
+    ifs :: () -> s64 {
+        local:= 13;
+        if local > 15 {
+            yield(local);
+            local += 2;
+        } else {
+            local += 1;
+            yield(local);
+            local += 3;
+        }
+        local += 4;
+        return local;
+    }
+
+    // (self: *COROUTINE) -> status: Co_Status, s64 {
+    //     using self.state;
+    //     while true if self.position == {
+    //     case; self.position = 0;
+    //     case 0;
+    //         local = 13;
+    //         if local > 15 {
+    //             using then_1;
+    //             self.position = 1;
+    //             return .YIELD, local;
+    //         } else {
+    //             using else_1;
+    //             local += 1;
+    //             self.position = 2;
+    //             return .YIELD, local;
+    //         }
+    //         self.position = 3;
+    //     case 1;
+    //         {
+    //             using then_1;
+    //             local += 2;
+    //         }
+    //         self.position = 3;
+    //     case 2;
+    //         {
+    //             using else_1;
+    //             local += 3;
+    //         }
+    //         self.position = 3;
+    //     case 3;
+    //         local += 4;
+    //         self.position = 0;
+    //         return .RETURN, local;
+    //     }
+    // }
+
+    YieldProc :: #run,stallable into_yielding(ifs);
+    yielding := init(YieldProc);
+
+    status, result := next(*yielding);
+    print("if yield : %\n", result);
+    assert(status == .YIELD && result == 14);
+
+    status, result  = next(*yielding);
+    print("if return: %\n", result);
+    assert(status == .RETURN && result == 21);
 }
 
 #scope_file

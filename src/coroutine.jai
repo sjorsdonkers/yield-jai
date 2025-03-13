@@ -4,7 +4,6 @@ logx :: (root: *Code_Node) {
     log("%", builder_to_string(*debug_builder));
 }
 
-
 Coroutinator :: struct {
     Coroutine: Type;
     next : Code;
@@ -90,22 +89,23 @@ into_yielding_impl :: ($code: Code) -> Coroutinator #compile_time {
         cases: [..]*Code_Node;
         add_case_default(*cases);
         current_case_block := add_case(*cases, 0);
-        next_position := 1; //return this from add_case?
+        active_case_id         := 0;
+        next_available_case_id := 1; //return this from add_case?
 
         statements: [..] *Code_Node;
         assert(header.body_or_null != null);
 
         sub_block := Block_Process.{original = header.body_or_null.block};
         while sub_block.statement_index < sub_block.original.statements.count {
-            new_block, exit := process_block(*sub_block, *next_position);
+            new_block, exit := process_block(*sub_block, *next_available_case_id);
             if new_block.statements.count > 0 { // 0 since no using state statement
                 array_add(*statements, ..new_block.statements);
             }
             if exit != .END {
                 current_case_block.statements = statements;
                 statements = [..]*Code_Node.{};
-                current_case_block = add_case(*cases, next_position);
-                next_position += 1;
+                active_case_id += 1;
+                current_case_block = add_case(*cases, active_case_id);
             }
         }
         if statements.count == 0 {
@@ -126,13 +126,16 @@ into_yielding_impl :: ($code: Code) -> Coroutinator #compile_time {
     return Coroutinator.{Coroutine(State, Output), new_code};
 }
 
-Block_Exit :: enum { END; RETURN; YIELD; }
+Block_Exit :: enum { END; RETURN_YIELD; }
 
 Block_Process :: struct {
     original: *Code_Block;
     statement_index := 0;
     current_sub_block: *Block_Process; // Can be null
+    waiting_else_block: *Block_Process; // Can be null
     name: string;
+
+    after_goto_case_id: s64;
 }
 
 using_state :: (name: string) -> *Code_Using {
@@ -142,16 +145,51 @@ using_state :: (name: string) -> *Code_Using {
     return root;
 }
 
-process_block :: (original: *Block_Process, next_position: *s64) -> *Code_Block, Block_Exit { //original_block to take statements from should modify this such that remaining statements can be put into the next positions block)
+has_more :: (block: Block_Process) -> bool {
+    return (block.statement_index < block.original.statements.count)
+        || block.current_sub_block != null
+        || block.waiting_else_block != null;
+}
+
+process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_Block, Block_Exit { //original_block to take statements from should modify this such that remaining statements can be put into the next positions block)
     new_block := New(Code_Block);
-    new_block.* = original.original.*;
+    new_block.* = self.original.*;
 
     statements : [..]*Code_Node;
-    if original.name then array_add(*statements, using_state(original.name));
+    if self.name then array_add(*statements, using_state(self.name));
 
-    for original.statement_index..original.original.statements.count-1 {
-        original.statement_index += 1; // Usually we want to increment, sometimes we reverse this for cases like BLOCK
-        stmnt := original.original.statements[it];
+    if self.current_sub_block == null
+        && self.waiting_else_block != null {
+            self.current_sub_block = self.waiting_else_block;
+            self.waiting_else_block = null;
+    }
+
+    while has_more(self) {
+        if self.current_sub_block != null {
+            sub_block, sub_exit := process_block(self.current_sub_block, next_available_case_id);
+            if sub_block.statements.count > 1 { // 1 for using state statement
+                array_add(*statements, sub_block);
+            }
+
+            after_goto_case_id := self.current_sub_block.after_goto_case_id;
+            if !has_more(self.current_sub_block) {
+                self.current_sub_block = null;
+            }
+
+            if sub_exit != .END {
+                new_block.statements = statements;
+                return new_block, sub_exit;
+            }
+            if after_goto_case_id != 0 {
+                array_add(*statements, set_position_node(after_goto_case_id));
+                new_block.statements = statements;
+                return new_block, .RETURN_YIELD;
+            }
+            continue;
+        }
+
+        stmnt := self.original.statements[self.statement_index];
+        defer self.statement_index += 1;
 
         if stmnt.kind == {
         case .RETURN;
@@ -159,39 +197,72 @@ process_block :: (original: *Block_Process, next_position: *s64) -> *Code_Block,
             array_add(*statements, return_with_costatus(stmnt.(*Code_Return)));
 
             new_block.statements = statements;
-            return new_block, .RETURN;
+            return new_block, .RETURN_YIELD;
         case .PROCEDURE_CALL;
             call := stmnt.(*Code_Procedure_Call);
             if call.procedure_expression.kind == .IDENT
             && "yield" == call.procedure_expression.(*Code_Ident).name {
-                array_add(*statements, set_position_node(next_position.*));
+                array_add(*statements, set_position_node(next_available_case_id.*));
+                next_available_case_id.* += 1;
                 array_add(*statements, convert_yield_to_return(call));
 
                 new_block.statements = statements;
-                return new_block, .YIELD;
+                return new_block, .RETURN_YIELD;
             }
         case .DECLARATION;
             array_add(*statements, convert_declaration_to_assignment(stmnt.(*Code_Declaration)));
             continue; // TODO compound declarations
         case .BLOCK;
-            if original.current_sub_block == null {
-                original.current_sub_block = New(Block_Process);
-                original.current_sub_block.original = stmnt.(*Code_Block);
-                original.current_sub_block.name = tprint("block_%", original.statement_index - 1);
+            assert(self.current_sub_block == null);
+            self.current_sub_block = New(Block_Process);
+            self.current_sub_block.original = stmnt.(*Code_Block);
+            self.current_sub_block.name = tprint("block_%", self.statement_index);
+            continue;
+        case .IF;
+            if_block := stmnt.(*Code_If);
+
+            assert(self.current_sub_block == null);
+            self.current_sub_block = New(Block_Process);
+            self.current_sub_block.original = if_block.then_block;
+            self.current_sub_block.name = tprint("then_%", self.statement_index);
+
+            // Do then block
+            // may return a Block_Process with a case id to continue in
+            then_block, then_exit := process_block(self.current_sub_block, next_available_case_id);
+            if_block.then_block = then_block;
+            if !has_more(self.current_sub_block) {
+                self.current_sub_block = null;
             }
 
-            sub_block, sub_exit := process_block(original.current_sub_block, next_position);
-            if sub_block.statements.count > 1 { // 1 for using state statement
-                array_add(*statements, sub_block);
+            else_exit := Block_Exit.END;
+            if if_block.else_block != null {
+                // Do else block, may return a Block_Process with a case id to continue in
+                assert(self.waiting_else_block == null);
+                self.waiting_else_block = New(Block_Process);
+                self.waiting_else_block.original = if_block.else_block;
+                self.waiting_else_block.name = tprint("else_%", self.statement_index);
+
+                else_block:, else_exit = process_block(self.waiting_else_block, next_available_case_id);
+                if_block.else_block = else_block;
+                if !has_more(self.waiting_else_block) {
+                    self.waiting_else_block = null;
+                }
             }
 
-            if original.current_sub_block.statement_index < original.current_sub_block.original.statements.count {
-                original.statement_index -= 1; // We are not be done with this block after this, so make sure we revisit it next time
-            }
+            array_add(*statements, if_block);
+            if then_exit != .END || else_exit != .END {
+                array_add(*statements, set_position_node(next_available_case_id.*));
+                // should waiting be moved to current block if that is null?
+                if self.current_sub_block then self.current_sub_block.after_goto_case_id = next_available_case_id.*;
+                if self.waiting_else_block then self.waiting_else_block.after_goto_case_id = next_available_case_id.*;
 
-            new_block.statements = statements;
-            return new_block, sub_exit;
+                next_available_case_id.* += 1;
+                new_block.statements = statements;
+                return new_block, then_exit;
+            }
+            continue;
         }
+
         array_add(*statements, stmnt);
     }
 
@@ -346,11 +417,25 @@ extract_state :: ($code: Code) -> Type #compile_time {
                 for block.members {
                     print_to_builder(builder, "%: %;\n", it.name, get_type(it.type));
                 }
-                for block.statements if it.kind == .BLOCK {
-                    sub_block := it.(*Code_Block);
-                    print_to_builder(builder, "block_%: struct {\n", it_index); // The name is used to `using` the state in the procedure [also shadowing is allowed]
-                    print_block_members(builder, sub_block);
-                    print_to_builder(builder, "};\n");
+                for block.statements {
+                    if it.kind == {
+                    case .BLOCK;
+                        sub_block := it.(*Code_Block);
+                        print_to_builder(builder, "block_%: struct {\n", it_index); // The name is used to `using` the state in the procedure [also shadowing is allowed]
+                        print_block_members(builder, sub_block);
+                        print_to_builder(builder, "};\n");
+                    case .IF;
+                        if_block := it.(*Code_If);
+                        print_to_builder(builder, "then_%: struct {\n", it_index);
+                        print_block_members(builder, if_block.then_block);
+                        print_to_builder(builder, "};\n");
+
+                        if if_block.else_block != null {
+                            print_to_builder(builder, "else_%: struct {\n", it_index);
+                            print_block_members(builder, if_block.else_block);
+                            print_to_builder(builder, "};\n");
+                        }
+                    }
                 }
             }
             builder: String_Builder;
