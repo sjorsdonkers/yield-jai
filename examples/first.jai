@@ -1,7 +1,7 @@
-// TODO store the initial arguments in the coroutine state set from init call?
-// Other wise the original argument could get you inside an if branch that following arguments would not have gone too.
-
+// TODO store the initial arguments in the coroutine state set from init call
 // Eventually a proc transformed to yielding or have yield statements remove should have the same effect when executed till completion.
+// If yield is placed in a spot that does not support it, it will not compile, for example in the condition of an if statement.
+// As implementation continues, more locations will be supported.
 
 main :: () {
     return_only();
@@ -166,10 +166,9 @@ nested_block :: () {
     assert(status == .RETURN && result == 45);
 }
 
-
 if_statement :: () {
-    ifs :: () -> s64 {
-        local:= 13;
+    ifs :: (arg: s64) -> s64 {
+        local:= arg;
         if local > 15 {
             yield(local);
             local += 2;
@@ -220,6 +219,7 @@ if_statement :: () {
 
     YieldProc :: #run,stallable into_yielding(ifs);
     yielding := init(YieldProc);
+    yielding.arguments = .{13};
 
     status, result := next(*yielding);
     print("if yield : %\n", result);
@@ -228,6 +228,8 @@ if_statement :: () {
     status, result  = next(*yielding);
     print("if return: %\n", result);
     assert(status == .RETURN && result == 21);
+
+    // yielder(ifs, 13); Not used for now
 }
 
 #scope_file

@@ -9,6 +9,22 @@ Coroutinator :: struct {
     next : Code;
 }
 
+// Works but, inconvenient to insert `yoo as it cannot be redefined, could take name as an argument
+yielder :: (resumable: $R, arguments:..Any, call:= #caller_code) #expand {
+    YieldProc :: #run,stallable into_yielding(resumable);
+    `yoo := init(YieldProc);
+
+    yoo.arguments = #insert -> string {
+        builder: String_Builder;
+        append(*builder, ".{");
+        root := compiler_get_nodes(call).(*Code_Procedure_Call);
+        print_arguments(*builder, array_view(root.arguments_unsorted, 1), false);
+        append(*builder, "};");
+        return builder_to_string(*builder);
+    };
+}
+
+
 init :: ($yielding: Coroutinator) -> $COROUTINE #modify {
     COROUTINE = yielding.Coroutine;
     return true;
@@ -21,10 +37,11 @@ yield :: (return_value: s64) #expand {
 }
 
 Co_Status :: enum { YIELD; RETURN; IMPLEMENTATION_ERROR; }
-Coroutine :: struct (State: Type, Output: Type) {
+Coroutine :: struct (Args: Type, State: Type, Output: Type) {
+    arguments : Args;
     state   : State;
     position: s64;
-    next : (*Coroutine(State, Output)) -> Co_Status, Output;
+    next : (*Coroutine(Args, State, Output)) -> Co_Status, Output;
 }
 next :: (yielding: *$T/Coroutine) -> Co_Status, T.Output {
     s, o := yielding.next(yielding);
@@ -50,6 +67,7 @@ into_yielding :: (proc: $T) -> Coroutinator #expand #compile_time {
 }
 
 into_yielding_impl :: ($code: Code) -> Coroutinator #compile_time {
+    Args   :: #run,stallable extract_arguments(code);
     State  :: #run extract_state(code);
     Output :: #run extract_output(code);
 
@@ -59,14 +77,13 @@ into_yielding_impl :: ($code: Code) -> Coroutinator #compile_time {
         header := root.(*Code_Procedure_Header);
         original_returns := header.returns;
         {
-            // Add coroutine as first argument
+            // Set coroutine as first and only argument. The original arguments should be held in the state and using-ed in the proc
             self_code := #code self: *COROUTINE;
             self_decl := compiler_get_nodes(self_code);
             assert(self_decl.kind == .DECLARATION, "%", self_decl.kind);
 
             arguments: [..] *Code_Declaration;
             array_add(*arguments, self_decl.(*Code_Declaration));
-            for header.arguments array_add(*arguments, it);
             header.arguments = arguments;
 
             // Add Co_Status as first return value
@@ -81,16 +98,18 @@ into_yielding_impl :: ($code: Code) -> Coroutinator #compile_time {
         }
 
         top_statements: [..]*Code_Node;
+        array_add(*top_statements, compiler_get_nodes(#code using self.arguments;));
         array_add(*top_statements, compiler_get_nodes(#code using self.state;));
 
+        // Create `while true if self.position == {`
         loop_node, cases_block := position_switch_node();
         array_add(*top_statements, loop_node);
 
         cases: [..]*Code_Node;
         add_case_default(*cases);
-        current_case_block := add_case(*cases, 0);
         active_case_id         := 0;
-        next_available_case_id := 1; //return this from add_case?
+        next_available_case_id := 1;
+        current_case_block     := add_case(*cases, active_case_id);
 
         statements: [..] *Code_Node;
         assert(header.body_or_null != null);
@@ -123,7 +142,7 @@ into_yielding_impl :: ($code: Code) -> Coroutinator #compile_time {
 
         return compiler_get_code(root);
     }
-    return Coroutinator.{Coroutine(State, Output), new_code};
+    return Coroutinator.{Coroutine(Args, State, Output), new_code};
 }
 
 Block_Exit :: enum { END; RETURN_YIELD; }
@@ -221,22 +240,22 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
         case .IF;
             if_block := stmnt.(*Code_If);
 
+            // Do then block
             assert(self.current_sub_block == null);
+            assert(if_block.then_block != null); // TBD is then optional? Like in `y := ifx x > 5 else 2;`
             self.current_sub_block = New(Block_Process);
             self.current_sub_block.original = if_block.then_block;
             self.current_sub_block.name = tprint("then_%", self.statement_index);
 
-            // Do then block
-            // may return a Block_Process with a case id to continue in
             then_block, then_exit := process_block(self.current_sub_block, next_available_case_id);
             if_block.then_block = then_block;
             if !has_more(self.current_sub_block) {
                 self.current_sub_block = null;
             }
 
+            // Do else block
             else_exit := Block_Exit.END;
             if if_block.else_block != null {
-                // Do else block, may return a Block_Process with a case id to continue in
                 assert(self.waiting_else_block == null);
                 self.waiting_else_block = New(Block_Process);
                 self.waiting_else_block.original = if_block.else_block;
@@ -405,6 +424,25 @@ extract_output :: ($code: Code) -> Type #compile_time {
     header := root.(*Code_Procedure_Header);
     assert(header.returns.count == 1);
     return get_type(header.returns[0].type_inst.result);
+}
+
+extract_arguments :: ($code: Code) -> Type #compile_time {
+    #insert -> Code {
+        root := compiler_get_nodes(code); assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
+        header := root.(*Code_Procedure_Header); assert(header.body_or_null != null);
+
+        type_root, type_nodes := compiler_get_nodes(#code Co_args :: struct {});
+        for type_nodes if it.kind == .BLOCK {
+            block := it.(*Code_Block);
+            statements: [..]*Code_Node;
+            for header.arguments {
+                array_add(*statements, it.(*Code_Node));
+            }
+            block.statements = statements;
+        }
+        return compiler_get_code(type_root);
+    };
+    return Co_args;
 }
 
 extract_state :: ($code: Code) -> Type #compile_time {
