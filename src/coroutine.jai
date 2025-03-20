@@ -106,7 +106,7 @@ into_yielding_impl :: ($code: Code) -> Coroutinator #compile_time {
         array_add(*top_statements, loop_node);
 
         cases: [..]*Code_Node;
-        add_case_default(*cases);
+        // add_case_default(*cases); // Probably not needed
         active_case_id         := 0;
         next_available_case_id := 1;
         current_case_block     := add_case(*cases, active_case_id);
@@ -145,7 +145,7 @@ into_yielding_impl :: ($code: Code) -> Coroutinator #compile_time {
     return Coroutinator.{Coroutine(Args, State, Output), new_code};
 }
 
-Block_Exit :: enum { END; RETURN_YIELD; }
+Block_Exit :: enum { END; NEW_CASE; }
 
 Block_Process :: struct {
     original: *Code_Block;
@@ -154,7 +154,9 @@ Block_Process :: struct {
     waiting_else_block: *Block_Process; // Can be null
     name: string;
 
-    after_goto_case_id: s64;
+    set_me_to_case_id : *s64;
+    after_goto_case_id:= -1;
+    inline_statements:= false;
 }
 
 using_state :: (name: string) -> *Code_Using {
@@ -165,9 +167,11 @@ using_state :: (name: string) -> *Code_Using {
 }
 
 has_more :: (block: Block_Process) -> bool {
-    return (block.statement_index < block.original.statements.count)
+    res :=  (block.statement_index < block.original.statements.count)
         || block.current_sub_block != null
         || block.waiting_else_block != null;
+    // assert(!res || block.after_goto_case_id == -1);
+    return res;
 }
 
 process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_Block, Block_Exit { //original_block to take statements from should modify this such that remaining statements can be put into the next positions block)
@@ -185,6 +189,13 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
 
     while has_more(self) {
         if self.current_sub_block != null {
+            if self.current_sub_block.inline_statements {
+                array_add(*statements, ..self.current_sub_block.original.statements);
+                new_block.statements = statements; // TODO Not sure if we need to copy here, do we need the using statement?
+                self.current_sub_block = null;
+                return new_block, .NEW_CASE; // always returnyield here is not clear from inline name
+            }
+
             sub_block, sub_exit := process_block(self.current_sub_block, next_available_case_id);
             if sub_block.statements.count > 1 { // 1 for using state statement
                 array_add(*statements, sub_block);
@@ -199,10 +210,10 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 new_block.statements = statements;
                 return new_block, sub_exit;
             }
-            if after_goto_case_id != 0 {
+            if after_goto_case_id != -1 {
                 array_add(*statements, set_position_node(after_goto_case_id));
                 new_block.statements = statements;
-                return new_block, .RETURN_YIELD;
+                return new_block, .NEW_CASE;
             }
             continue;
         }
@@ -216,7 +227,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             array_add(*statements, return_with_costatus(stmnt.(*Code_Return)));
 
             new_block.statements = statements;
-            return new_block, .RETURN_YIELD;
+            return new_block, .NEW_CASE;
         case .PROCEDURE_CALL;
             call := stmnt.(*Code_Procedure_Call);
             if call.procedure_expression.kind == .IDENT
@@ -226,7 +237,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 array_add(*statements, convert_yield_to_return(call));
 
                 new_block.statements = statements;
-                return new_block, .RETURN_YIELD;
+                return new_block, .NEW_CASE;
             }
         case .DECLARATION;
             array_add(*statements, convert_declaration_to_assignment(stmnt.(*Code_Declaration)));
@@ -275,11 +286,93 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 if self.current_sub_block then self.current_sub_block.after_goto_case_id = next_available_case_id.*;
                 if self.waiting_else_block then self.waiting_else_block.after_goto_case_id = next_available_case_id.*;
 
+                // We start a new case here such that both branches can jump to the same position
                 next_available_case_id.* += 1;
                 new_block.statements = statements;
                 return new_block, then_exit;
             }
             continue;
+        case .WHILE;
+            assert(self.current_sub_block == null);
+            assert(self.waiting_else_block == null);
+
+            while_block := stmnt.(*Code_While);
+            self.waiting_else_block = New(Block_Process);
+            self.waiting_else_block.original = while_block.block;
+            self.waiting_else_block.name = tprint("while_%", self.statement_index);
+
+            // Reserve a case id for the while loop
+            reserved_case_id:= next_available_case_id.*;
+            next_available_case_id.* += 1;
+
+            body_block, while_exit := process_block(self.waiting_else_block, next_available_case_id);
+            if !has_more(self.waiting_else_block) {
+                self.waiting_else_block = null;
+            }
+
+            if while_exit == .END {
+                // The while loop does not contain any yields or returns so we can just add it as a normal while loop
+                array_add(*statements, while_block);
+                // No new cases were added, so we give back the reserved id
+                assert(next_available_case_id.* == reserved_case_id + 1);
+                next_available_case_id.* = reserved_case_id;
+                continue;
+            }
+            // HMM we want to give the stack down to the leaves such that the leaf can start a new case a just write the code as below
+            //
+
+            // case 0;
+            //      code before while
+            //      yield 1
+            // case 1;
+            //      if while condition {
+            //          code until yield 2
+            //      }
+            //      yield 4
+            // case 2;
+            //      code in while after 1st yield
+            //      yield 3 // yield to next pos if has_more code
+            // case 3;
+            //      code in while after 2nd yield until end of while block
+            //      yield 1 // yield to loop start if we reached the end of the loop block
+            // case 4;
+            //      code after while
+
+            // If this contains a yield or return we turn it into an if statement
+            // Before doing so we need to end the current case as we do not want to re-execute that code
+            // NOTE the id has already been updated by the while_body so the body continuation should be before the while body
+            array_add(*statements, set_position_node(reserved_case_id));
+            self.waiting_else_block.after_goto_case_id = reserved_case_id;
+            log("Reserved case id: %", reserved_case_id);
+
+            // WE ARE HERE!!!
+            // Make block add these statements below
+            // Set it as the current sub-block (be sad about the extra nested block we add here), may be add inline flag later
+            // prevent sub_block from being reprocessed, may use same inline flag
+            if_node := New(Code_If);
+            if_node.kind = .IF;
+            if_node.condition = while_block.condition;
+            if_node.then_block = body_block;
+
+            while_statements: [..]*Code_Node;
+            array_add(*while_statements, if_node);
+            // // We need to end this case here as we do not want to execute code after the while loop until the loop has completed
+            position_node, id_ptr := set_position_node(next_available_case_id.*);
+            array_add(*while_statements, position_node);
+            assert(self.set_me_to_case_id == null);
+            self.set_me_to_case_id = id_ptr;
+            next_available_case_id.* += 1;
+
+            temp_block := New(Code_Block);
+            temp_block.* = self.original.*;
+            temp_block.statements = while_statements;
+
+            self.current_sub_block = New(Block_Process);
+            self.current_sub_block.original = temp_block;
+            self.current_sub_block.inline_statements = true;
+
+            new_block.statements = statements;
+            return new_block, while_exit;
         }
 
         array_add(*statements, stmnt);
@@ -356,13 +449,14 @@ default_return :: (returns: []*Code_Declaration) -> *Code_Block {
     return block_node;
 }
 
-set_position_node :: (position: s64) -> *Code_Node {
+// TODO update to not take position but take pointer to _s64 such that it can be set in the future
+set_position_node :: (position: s64) -> *Code_Node, *s64 {
     set_code := #code self.position = 0;
     root, nodes := compiler_get_nodes(set_code);
     for nodes if it.kind == .LITERAL {
         it.(*Code_Literal)._s64 = position;
+        return root, *it.(*Code_Literal)._s64;
     }
-    return root;
 }
 
 // Add .RETURN to every return statement;
@@ -473,6 +567,11 @@ extract_state :: ($code: Code) -> Type #compile_time {
                             print_block_members(builder, if_block.else_block);
                             print_to_builder(builder, "};\n");
                         }
+                    case .WHILE;
+                        while_block := it.(*Code_While);
+                        print_to_builder(builder, "while_%: struct {\n", it_index);
+                        print_block_members(builder, while_block.block);
+                        print_to_builder(builder, "};\n");
                     }
                 }
             }
