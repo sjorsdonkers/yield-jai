@@ -253,6 +253,7 @@ while_statement :: () {
     //     case 0;
     //         local = 0;
     //         self.position = 1;
+    //         continue;
     //     case 1;
     //         if local < 3 {
     //             using while_1;

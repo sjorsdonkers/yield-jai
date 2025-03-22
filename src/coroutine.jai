@@ -242,7 +242,6 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
         }
 
         if self.statement_index >= self.original.statements.count {
-            log("This should happen %", self.after_goto_case_id);
             assert(self.after_goto_case_id != -1);
             array_add(*statements, set_position_node(self.after_goto_case_id));
             self.after_goto_case_id = -1;
@@ -321,7 +320,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             then_block, then_exit := process_block(self.current_sub_block, next_available_case_id);
             // NOTE: We ignore and skip the returned case_id
             if_block.then_block = then_block;
-            if !has_more(self.current_sub_block) {
+            if then_exit == .END && !has_more(self.current_sub_block) {
                 self.current_sub_block = null;
             }
 
@@ -336,7 +335,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 else_block:, else_exit = process_block(self.waiting_sub_block, next_available_case_id);
                 // NOTE: We ignore and skip the returned case_id
                 if_block.else_block = else_block;
-                if !has_more(self.waiting_sub_block) {
+                if else_exit == .END && !has_more(self.waiting_sub_block) {
                     self.waiting_sub_block = null;
                 }
             }
@@ -384,6 +383,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             // case 0;
             //      code before while
             //      goto 1
+            //      continue <--
             // case 1;
             //      if while condition {
             //          code until goto 2
@@ -403,6 +403,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             // NOTE the id has already been updated by the while_body so the body continuation should be before the while body
             loop_start_case_id                        := next_available_case_id.*;
             array_add(*statements, set_position_node(loop_start_case_id));
+            array_add(*statements, compiler_get_nodes(#code continue)); // We need to continue to prevent the execution of any code of higher blocks
             next_available_case_id.*                  += 1;
             self.waiting_sub_block.after_goto_case_id = loop_start_case_id;
             case_id                                   := self.set_me_to_case_id;
