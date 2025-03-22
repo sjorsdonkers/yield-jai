@@ -52,14 +52,20 @@ yield_end_of_block :: () {
 nested_while :: () {
     whiles :: () -> s64 {
         local:= 0;
-        while local < 2 {
-            nested:= 1;
-            while nested < 2 {
-                local += 2;
-                yield(nested);
-                nested += 1;
+        {
+            while local < 2 {
+                nested:= 1;
+                {
+                    while nested < 2 {
+                        local += 2;
+                        {
+                            yield(nested);
+                        }
+                        nested += 1;
+                    }
+                }
+                yield(local);
             }
-            yield(local);
         }
         local += 9;
         return local;

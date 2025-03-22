@@ -231,8 +231,6 @@ if_statement :: () {
     status, result  = next(*yielding);
     print("if return: %\n", result);
     assert(status == .RETURN && result == 21);
-
-    // yielder(ifs, 13); Not used for now
 }
 
 while_statement :: () {

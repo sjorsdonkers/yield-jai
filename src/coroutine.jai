@@ -208,19 +208,19 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
 
 
             if sub_exit != .END {
-            if !has_more(self.current_sub_block) {
-                self.current_sub_block = null; // HEEEERE this should not happen if we are going to YIELD and and after foto is not -1
-            }
                 if sub_case_id == -1 {
                     sub_case_id = self.set_me_to_case_id;
-                    self.set_me_to_case_id = -1;
+                    self.set_me_to_case_id = self.current_sub_block.set_me_to_case_id; // here or only if !hasmore?
+                }
+                if !has_more(self.current_sub_block) {
+                    self.current_sub_block = null;
                 }
                 new_block.statements = statements;
                 return new_block, sub_exit, sub_case_id;
             }
             after_goto_case_id := self.current_sub_block.after_goto_case_id;
             if !has_more_except_after_goto(self.current_sub_block) {
-                self.current_sub_block = null; // HEEEERE this should not happen if we are going to YIELD and and after foto is not -1
+                self.current_sub_block = null;
             }
             if after_goto_case_id != -1 { // TODO only when !has_more?
                 array_add(*statements, set_position_node(after_goto_case_id));
