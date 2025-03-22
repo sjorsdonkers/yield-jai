@@ -112,7 +112,7 @@ into_yielding_impl :: ($code: Code) -> Coroutinator #compile_time {
         sub_block.set_me_to_case_id = 0;
         next_available_case_id := 1;
 
-        while sub_block.statement_index < sub_block.original.statements.count {
+        while has_more(sub_block) {
             new_block, exit, case_id := process_block(*sub_block, *next_available_case_id);
 
             // if new_block.statements.count > 0 { // 0 since no using state statement
@@ -141,15 +141,15 @@ into_yielding_impl :: ($code: Code) -> Coroutinator #compile_time {
 Block_Exit :: enum { END; NEW_CASE; }
 
 Block_Process :: struct {
-    original: *Code_Block;
-    statement_index := 0;
+    original         : *Code_Block;
+    statement_index  := 0;
     current_sub_block: *Block_Process; // Can be null
-    waiting_else_block: *Block_Process; // Can be null
-    name: string;
+    waiting_sub_block: *Block_Process; // Can be null
+    name             : string;
 
     set_me_to_case_id := -1;
     after_goto_case_id:= -1;
-    inline_statements:= false;
+    original_is_processed := false;
 }
 
 using_state :: (name: string) -> *Code_Using {
@@ -159,11 +159,15 @@ using_state :: (name: string) -> *Code_Using {
     return root;
 }
 
-has_more :: (block: Block_Process) -> bool {
-    res :=  (block.statement_index < block.original.statements.count)
-        || block.current_sub_block != null
-        || block.waiting_else_block != null;
-    // assert(!res || block.after_goto_case_id == -1);
+has_more :: (self: Block_Process) -> bool {
+    res :=  has_more_except_after_goto(self)
+        || self.after_goto_case_id != -1;
+    return res;
+}
+has_more_except_after_goto :: (self: Block_Process) -> bool {
+    res :=  (self.statement_index < self.original.statements.count)
+        || self.current_sub_block != null
+        || self.waiting_sub_block != null;
     return res;
 }
 
@@ -175,20 +179,20 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
     if self.name then array_add(*statements, using_state(self.name));
 
     if self.current_sub_block == null
-        && self.waiting_else_block != null {
-            self.current_sub_block = self.waiting_else_block;
-            self.waiting_else_block = null;
+        && self.waiting_sub_block != null {
+            self.current_sub_block = self.waiting_sub_block;
+            self.waiting_sub_block = null;
     }
 
     while has_more(self) {
         if self.current_sub_block != null {
-            if self.current_sub_block.inline_statements {
+            if self.current_sub_block.original_is_processed { // This is mostly just an optimization to prevent unnecessary splits before while loops
                 array_add(*statements, ..self.current_sub_block.original.statements);
 
-                // TODO add goto position after goto case id
-
+                // We do not use after_goto_case_id atm, the creator can set it..for now
                 new_block.statements = statements; // TODO Not sure if we need to copy here, do we need the using statement?
-                case_id := self.current_sub_block.after_goto_case_id;
+                case_id := self.current_sub_block.set_me_to_case_id;
+                self.current_sub_block.set_me_to_case_id = -1;
                 if case_id == -1 {
                     case_id = self.set_me_to_case_id;
                     self.set_me_to_case_id = -1;
@@ -202,12 +206,11 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 array_add(*statements, sub_block);
             }
 
-            after_goto_case_id := self.current_sub_block.after_goto_case_id;
-            if !has_more(self.current_sub_block) {
-                self.current_sub_block = null;
-            }
 
             if sub_exit != .END {
+            if !has_more(self.current_sub_block) {
+                self.current_sub_block = null; // HEEEERE this should not happen if we are going to YIELD and and after foto is not -1
+            }
                 if sub_case_id == -1 {
                     sub_case_id = self.set_me_to_case_id;
                     self.set_me_to_case_id = -1;
@@ -215,19 +218,39 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 new_block.statements = statements;
                 return new_block, sub_exit, sub_case_id;
             }
+            after_goto_case_id := self.current_sub_block.after_goto_case_id;
+            if !has_more_except_after_goto(self.current_sub_block) {
+                self.current_sub_block = null; // HEEEERE this should not happen if we are going to YIELD and and after foto is not -1
+            }
             if after_goto_case_id != -1 { // TODO only when !has_more?
+                array_add(*statements, set_position_node(after_goto_case_id));
                 if sub_case_id == -1 {
                     sub_case_id = self.set_me_to_case_id;
                     self.set_me_to_case_id = -1;
                 }
-                array_add(*statements, set_position_node(after_goto_case_id));
                 new_block.statements = statements;
                 return new_block, .NEW_CASE, sub_case_id;
             }
 
-            assert(self.set_me_to_case_id == -1);
-            self.set_me_to_case_id = sub_case_id;
+            // We dropped of the end of a nested block, so we take over the case id
+            // However, we we may have started the sub block ourselves in which case it's ID are irrelevant
+            assert(!(self.set_me_to_case_id == -1 && sub_case_id == -1), "% - ", self.set_me_to_case_id, sub_case_id);
+            if sub_case_id != -1 {
+                self.set_me_to_case_id = sub_case_id;
+            }
             continue;
+        }
+
+        if self.statement_index >= self.original.statements.count {
+            log("This should happen %", self.after_goto_case_id);
+            assert(self.after_goto_case_id != -1);
+            array_add(*statements, set_position_node(self.after_goto_case_id));
+            self.after_goto_case_id = -1;
+
+            new_block.statements = statements;
+            case_id := self.set_me_to_case_id;
+            self.set_me_to_case_id = -1;
+            return new_block, .NEW_CASE, case_id;
         }
 
         stmnt := self.original.statements[self.statement_index];
@@ -305,116 +328,115 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             // Do else block
             else_exit := Block_Exit.END;
             if if_block.else_block != null {
-                assert(self.waiting_else_block == null);
-                self.waiting_else_block = New(Block_Process);
-                self.waiting_else_block.original = if_block.else_block;
-                self.waiting_else_block.name = tprint("else_%", self.statement_index);
+                assert(self.waiting_sub_block == null);
+                self.waiting_sub_block = New(Block_Process);
+                self.waiting_sub_block.original = if_block.else_block;
+                self.waiting_sub_block.name = tprint("else_%", self.statement_index);
 
-                else_block:, else_exit = process_block(self.waiting_else_block, next_available_case_id);
+                else_block:, else_exit = process_block(self.waiting_sub_block, next_available_case_id);
                 // NOTE: We ignore and skip the returned case_id
                 if_block.else_block = else_block;
-                if !has_more(self.waiting_else_block) {
-                    self.waiting_else_block = null;
+                if !has_more(self.waiting_sub_block) {
+                    self.waiting_sub_block = null;
                 }
             }
 
             array_add(*statements, if_block);
             if then_exit != .END || else_exit != .END {
+                // We create a case ID such that both branching blocks can jump to the same position
                 array_add(*statements, set_position_node(next_available_case_id.*)); // TODO sometimes unreachable
-                // should waiting be moved to current block if that is null?
                 if self.current_sub_block  then self.current_sub_block.after_goto_case_id  = next_available_case_id.*;
-                if self.waiting_else_block then self.waiting_else_block.after_goto_case_id = next_available_case_id.*;
+                if self.waiting_sub_block then self.waiting_sub_block.after_goto_case_id = next_available_case_id.*;
+
                 case_id := self.set_me_to_case_id;
                 self.set_me_to_case_id = next_available_case_id.*;
-
-                // We start a new case here such that both branches can jump to the same position
                 next_available_case_id.* += 1;
-                new_block.statements = statements;
 
+                new_block.statements = statements;
                 return new_block, .NEW_CASE, case_id;
             }
             continue;
-        // case .WHILE;
-        //     assert(self.current_sub_block == null);
-        //     assert(self.waiting_else_block == null);
+        case .WHILE;
+            assert(self.current_sub_block == null && self.waiting_sub_block == null);
 
-        //     while_block := stmnt.(*Code_While);
-        //     self.waiting_else_block = New(Block_Process);
-        //     self.waiting_else_block.original = while_block.block;
-        //     self.waiting_else_block.name = tprint("while_%", self.statement_index);
+            while_block := stmnt.(*Code_While);
+            self.waiting_sub_block = New(Block_Process);
+            self.waiting_sub_block.original = while_block.block;
+            self.waiting_sub_block.name = tprint("while_%", self.statement_index);
 
-        //     // Reserve a case id for the while loop
-        //     reserved_case_id:= next_available_case_id.*;
-        //     next_available_case_id.* += 1;
+            body_block, while_exit := process_block(self.waiting_sub_block, next_available_case_id);
 
-        //     body_block, while_exit := process_block(self.waiting_else_block, next_available_case_id);
-        //     if !has_more(self.waiting_else_block) {
-        //         self.waiting_else_block = null;
-        //     }
+            if while_exit == .END {
+                // If the block yielded we always need to keep it to at least write the goto start
+                if !has_more(self.waiting_sub_block) {
+                    self.waiting_sub_block = null;
+                }
+                // The while loop does not contain any yields or returns so we can just add it as a normal while loop
+                array_add(*statements, while_block);
+                // // No new cases were added, so we give back the reserved id
+                // assert(next_available_case_id.* == reserved_case_id + 1);
+                // next_available_case_id.* = reserved_case_id;
+                continue;
+            }
+            // HMM we want to give the stack down to the leaves such that the leaf can start a new case a just write the code as below
+            //
 
-        //     if while_exit == .END {
-        //         // The while loop does not contain any yields or returns so we can just add it as a normal while loop
-        //         array_add(*statements, while_block);
-        //         // No new cases were added, so we give back the reserved id
-        //         assert(next_available_case_id.* == reserved_case_id + 1);
-        //         next_available_case_id.* = reserved_case_id;
-        //         continue;
-        //     }
-        //     // HMM we want to give the stack down to the leaves such that the leaf can start a new case a just write the code as below
-        //     //
+            // case 0;
+            //      code before while
+            //      goto 1
+            // case 1;
+            //      if while condition {
+            //          code until goto 2
+            //      }
+            //      goto 4
+            // case 2;
+            //      code in while after 1st yield
+            //      goto 3 // yield to next pos if has_more code
+            // case 3;
+            //      code in while after 2nd yield until end of while block
+            //      goto 1 // yield to loop start if we reached the end of the loop block
+            // case 4;
+            //      code after while
 
-        //     // case 0;
-        //     //      code before while
-        //     //      yield 1
-        //     // case 1;
-        //     //      if while condition {
-        //     //          code until yield 2
-        //     //      }
-        //     //      yield 4
-        //     // case 2;
-        //     //      code in while after 1st yield
-        //     //      yield 3 // yield to next pos if has_more code
-        //     // case 3;
-        //     //      code in while after 2nd yield until end of while block
-        //     //      yield 1 // yield to loop start if we reached the end of the loop block
-        //     // case 4;
-        //     //      code after while
+            // If this contains a yield or return we turn it into an if statement
+            // Before doing so we need to end the current case as we do not want to re-execute that code
+            // NOTE the id has already been updated by the while_body so the body continuation should be before the while body
+            loop_start_case_id                        := next_available_case_id.*;
+            array_add(*statements, set_position_node(loop_start_case_id));
+            next_available_case_id.*                  += 1;
+            self.waiting_sub_block.after_goto_case_id = loop_start_case_id;
+            case_id                                   := self.set_me_to_case_id;
 
-        //     // If this contains a yield or return we turn it into an if statement
-        //     // Before doing so we need to end the current case as we do not want to re-execute that code
-        //     // NOTE the id has already been updated by the while_body so the body continuation should be before the while body
-        //     array_add(*statements, set_position_node(reserved_case_id));
-        //     self.waiting_else_block.after_goto_case_id = reserved_case_id;
-        //     log("Reserved case id: %", reserved_case_id);
+            {
+                // Make block add these statements below
+                // Set it as the current sub-block (be sad about the extra nested block we add here), may be add inline flag later
+                // prevent sub_block from being reprocessed, may use same inline flag
+                while_statements: [..]*Code_Node;
+                {
+                    if_node           := New(Code_If);
+                    if_node.kind       = .IF;
+                    if_node.condition  = while_block.condition;
+                    if_node.then_block = body_block;
 
-        //     // WE ARE HERE!!!
-        //     // Make block add these statements below
-        //     // Set it as the current sub-block (be sad about the extra nested block we add here), may be add inline flag later
-        //     // prevent sub_block from being reprocessed, may use same inline flag
-        //     if_node := New(Code_If);
-        //     if_node.kind = .IF;
-        //     if_node.condition = while_block.condition;
-        //     if_node.then_block = body_block;
+                    array_add(*while_statements, if_node);
+                }
+                // // We need to end this case here as we do not want to execute code after the while loop until the loop has completed
+                after_while_case_id      := next_available_case_id.*;
+                array_add(*while_statements, set_position_node(after_while_case_id));
+                self.set_me_to_case_id    = after_while_case_id;
+                next_available_case_id.* += 1;
 
-        //     while_statements: [..]*Code_Node;
-        //     array_add(*while_statements, if_node);
-        //     // // We need to end this case here as we do not want to execute code after the while loop until the loop has completed
-        //     position_node, id_ptr := set_position_node(next_available_case_id.*);
-        //     array_add(*while_statements, position_node);
-        //     assert(self.set_me_to_case_id == null);
-        //     self.set_me_to_case_id = id_ptr;
-        //     next_available_case_id.* += 1;
+                temp_block           := New(Code_Block);
+                temp_block.*          = self.original.*;
+                temp_block.statements = while_statements;
 
-        //     temp_block := New(Code_Block);
-        //     temp_block.* = self.original.*;
-        //     temp_block.statements = while_statements;
-
-        //     self.current_sub_block = New(Block_Process);
-        //     self.current_sub_block.original = temp_block;
-        //     self.current_sub_block.inline_statements = true;
-
-        //     new_block.statements = statements;
-        //     return new_block, while_exit;
+                self.current_sub_block                   = New(Block_Process);
+                self.current_sub_block.original          = temp_block;
+                self.current_sub_block.set_me_to_case_id = loop_start_case_id;
+                self.current_sub_block.original_is_processed = true;
+            }
+            new_block.statements = statements;
+            return new_block, while_exit, case_id;
         }
 
         array_add(*statements, stmnt);

@@ -10,7 +10,7 @@ main :: () {
     locals();
     nested_block();
     if_statement();
-    // while_statement();
+    while_statement();
 }
 
 return_only :: () {
@@ -235,63 +235,59 @@ if_statement :: () {
     // yielder(ifs, 13); Not used for now
 }
 
-// while_statement :: () {
-//     whiles :: () -> s64 {
-//         local:= 0;
-//         while local < 3 {
-//             yield(local);
-//             local += 5;
-//             yield(local);
-//             local += 7;
-//         }
-//         local += 9;
-//         return local;
-//     }
+while_statement :: () {
+    whiles :: () -> s64 {
+        local:= 0;
+        while local < 3 {
+            yield(local);
+            local += 2;
+        }
+        local += 9;
+        return local;
+    }
 
-//     // co_whiles :: (self: *COROUTINE) -> status: Co_Status, s64 {
-//     //     using self.state;
-//     //     while true if self.position == {
-//     //     case; self.position = 0;
-//     //     case 0;
-//     //         local = 0;
-//     //         self.position = 1;
-//     //     case 1;
-//     //         if local < 3 {
-//     //             using while_1;
-//     //             self.position = 2;
-//     //             return .YIELD, local;
-//     //         }
-//     //         self.position = 3;
-//     //     case 2;
-//     //         {
-//     //             using while_1;
-//     //             local += 2;
-//     //         }
-//     //         self.position = 1;
-//     //     case 3;
-//     //         local += 1;
-//     //         self.position = 0;
-//     //         return .RETURN, local;
-//     //     }
-//     // }
+    // co_whiles :: (self: *COROUTINE) -> status: Co_Status, s64 {
+    //     using self.state;
+    //     while true if self.position == {
+    //     case; self.position = 0;
+    //     case 0;
+    //         local = 0;
+    //         self.position = 1;
+    //     case 1;
+    //         if local < 3 {
+    //             using while_1;
+    //             self.position = 2;
+    //             return .YIELD, local;
+    //         }
+    //         self.position = 3;
+    //     case 2;
+    //         {
+    //             using while_1;
+    //             local += 2;
+    //         }
+    //         self.position = 1;
+    //     case 3;
+    //         local += 9;
+    //         self.position = 0;
+    //         return .RETURN, local;
+    //     }
+    // }
 
-//     YieldProc :: #run,stallable into_yielding(whiles);
-//     yielding := init(YieldProc);
+    YieldProc :: #run,stallable into_yielding(whiles);
+    yielding := init(YieldProc);
 
-//     status, result := next(*yielding);
-//     print("while yield : %\n", result);
-//     assert(status == .YIELD && result == 0);
+    status, result := next(*yielding);
+    print("while yield : %\n", result);
+    assert(status == .YIELD && result == 0);
 
-//     status, result  = next(*yielding);
-//     print("while yield : %\n", result);
-//     assert(status == .YIELD && result == 2);
+    status, result  = next(*yielding);
+    print("while yield : %\n", result);
+    assert(status == .YIELD && result == 2);
 
-//     status, result  = next(*yielding);
-//     print("while return: %\n", result);
-//     assert(status == .RETURN && result == 5);
-
-//     // yielder(ifs, 13); Not used for now
-// }
+    status, result  = next(*yielding);
+    print("while return: %\n", result);
+    assert(status == .RETURN && result == 13);
+}
 
 #scope_file
 #import,file "../module.jai";
