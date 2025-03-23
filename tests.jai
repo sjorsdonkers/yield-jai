@@ -7,6 +7,7 @@
 
     t0 := seconds_since_init();
     test("./examples", "first", args);
+    test("./examples", "while", args);
     print("Tests ran in % seconds\n", seconds_since_init() - t0);
 
     set_build_options_dc(.{do_output=false});
