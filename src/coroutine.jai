@@ -160,14 +160,10 @@ using_state :: (name: string) -> *Code_Using {
 }
 
 has_more :: (self: Block_Process) -> bool {
-    res :=  has_more_except_after_goto(self)
-        || self.after_goto_case_id != -1;
-    return res;
-}
-has_more_except_after_goto :: (self: Block_Process) -> bool {
     res :=  (self.statement_index < self.original.statements.count)
         || self.current_sub_block != null
-        || self.waiting_sub_block != null;
+        || self.waiting_sub_block != null
+        || self.after_goto_case_id != -1;
     return res;
 }
 
@@ -213,22 +209,17 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             if sub_exit != .END {
                 if !has_more(self.current_sub_block) {
                     // Is this when we yield/return as the last statement in a sub block?
-                    log("AHAHAHA");
-                    logx(sub_block);
-                    assert(self.current_sub_block.set_me_to_case_id == -1, "% - %", self.current_sub_block.set_me_to_case_id, sub_case_id);
+                    // log("AHAHAHA");
+                    // logx(sub_block);
+                    // assert(self.current_sub_block.set_me_to_case_id == -1, "% - %", self.current_sub_block.set_me_to_case_id, sub_case_id);
                     self.current_sub_block = null;
                 }
                 new_block.statements = statements;
                 return new_block, sub_exit, sub_case_id;
             }
-            after_goto_case_id := self.current_sub_block.after_goto_case_id;
-            if !has_more_except_after_goto(self.current_sub_block) {
+            if !has_more(self.current_sub_block) {
+                // assert(false);
                 self.current_sub_block = null;
-            }
-            if after_goto_case_id != -1 { // TODO only when !has_more?
-                array_add(*statements, set_position_node(after_goto_case_id));
-                new_block.statements = statements;
-                return new_block, .NEW_CASE, sub_case_id;
             }
 
             // We dropped of the end of a nested block, so we take over the case id
@@ -413,6 +404,10 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
         array_add(*statements, stmnt);
     }
 
+    if self.after_goto_case_id != -1 {
+        array_add(*statements, set_position_node(self.after_goto_case_id));
+        self.after_goto_case_id = -1; // May not be needed
+    }
     return_new_block(.END);
 }
 
