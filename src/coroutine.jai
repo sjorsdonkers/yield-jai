@@ -115,8 +115,7 @@ into_yielding_impl :: ($code: Code) -> Coroutinator #compile_time {
         while has_more(sub_block) {
             new_block, exit, case_id := process_block(*sub_block, *next_available_case_id);
             assert(case_id != -1);
-            current_case_block := add_case(*cases, case_id); // TODO take new_block as arg instead of returning then setting it
-            current_case_block.statements = new_block.statements;
+            add_case(*cases, case_id, new_block);
         }
         cases_block.statements = cases;
 
@@ -206,26 +205,22 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             array_add(*statements, sub_block);
             assert(sub_case_id != -1);
 
-            if sub_exit != .END {
-                if !has_more(self.current_sub_block) {
-                    // Is this when we yield/return as the last statement in a sub block?
-                    // log("AHAHAHA");
-                    // logx(sub_block);
-                    // assert(self.current_sub_block.set_me_to_case_id == -1, "% - %", self.current_sub_block.set_me_to_case_id, sub_case_id);
-                    self.current_sub_block = null;
-                }
+            if !has_more(self.current_sub_block) {
+                // Is this when we yield/return as the last statement in a sub block?
+                // assert(self.current_sub_block.set_me_to_case_id == -1, "% - %", self.current_sub_block.set_me_to_case_id, sub_case_id); // ??
+                self.current_sub_block = null;
+            }
+            if sub_exit == .END {
+                // We dropped of the end of a nested block, so we take over the case id
+                // However, we we may have started the sub block ourselves in which case it's ID are irrelevant
+                assert(self.set_me_to_case_id == -1 || self.set_me_to_case_id == sub_case_id); // ??
+                self.set_me_to_case_id = sub_case_id;
+                continue;
+            } else {
+                // The sub block yielded so we just return what it told us
                 new_block.statements = statements;
                 return new_block, sub_exit, sub_case_id;
             }
-            if !has_more(self.current_sub_block) {
-                // assert(false);
-                self.current_sub_block = null;
-            }
-
-            // We dropped of the end of a nested block, so we take over the case id
-            // However, we we may have started the sub block ourselves in which case it's ID are irrelevant
-            self.set_me_to_case_id = sub_case_id;
-            continue;
         }
 
         // We may be at the end of the block, but still need to write the after goto statement
@@ -264,14 +259,12 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             assert(self.current_sub_block == null);
             self.current_sub_block = new_sub_block(stmnt.(*Code_Block), tprint("block_%", self.statement_index));
             block, exit, case_id  := process_block(self.current_sub_block, next_available_case_id);
-            // log("block: %, %, %", self.current_sub_block.set_me_to_case_id, exit, case_id);
             assert(case_id == -1);
             array_add(*statements, block);
             if exit == .END {
                 self.current_sub_block = null;
                 continue;
             } else {
-                log("block: %, %, %", self.current_sub_block.set_me_to_case_id, exit, case_id);
                 return_new_block(exit, self.current_sub_block.set_me_to_case_id);
             }
         case .IF;
@@ -404,10 +397,6 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
         array_add(*statements, stmnt);
     }
 
-    if self.after_goto_case_id != -1 {
-        array_add(*statements, set_position_node(self.after_goto_case_id));
-        self.after_goto_case_id = -1; // May not be needed
-    }
     return_new_block(.END);
 }
 
@@ -419,16 +408,16 @@ position_switch_node :: () -> *Code_Node, *Code_Block {
     return while_node, switch_node.then_block;
 }
 
-add_case :: (cases: *[..]*Code_Node, position: s64) -> *Code_Block {
+add_case :: (cases: *[..]*Code_Node, position: s64, then_block: *Code_Block) {
     case_code: Code;
     {
         case_code = #code case -1;
     }
     case_node := compiler_get_nodes(case_code).(*Code_Case);
     case_node.condition.(*Code_Literal)._s64 = position;
+    case_node.then_block = then_block;
 
     array_add(cases, case_node);
-    return case_node.then_block;
 }
 
 // Adds a case that resets the position to 0 if no other case is matched;
