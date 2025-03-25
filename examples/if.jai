@@ -3,6 +3,7 @@ main :: () {
     plain_if_else();
     yield_or_not();
     nested_if();
+    while_in_if();
 }
 
 plain_if :: () {
@@ -114,6 +115,40 @@ nested_if :: () {
     assert(status == .YIELD && result == 14, "nested if: %\n", result);
     status, result  = next(*yielding);
     assert(status == .RETURN && result == 19, "nested if return: %\n", result);
+}
+
+while_in_if :: () {
+    ifs :: (arg: s64) -> s64 {
+        if arg < 2 {
+            while arg < 2 {
+                arg += 1;
+                yield(arg);
+                arg += 1;
+            }
+            yield(17);
+        }
+        arg += 9;
+        return arg;
+    }
+
+    yielding := init(#run,stallable into_yielding(ifs));
+    yielding.arguments.arg = 1;
+    status, result := next(*yielding);
+    assert(status == .YIELD && result == 2, "yield or not yield: %\n", result);
+    status, result  = next(*yielding);
+    assert(status == .YIELD && result == 17, "yield or not yield: %\n", result);
+    status, result  = next(*yielding);
+    assert(status == .RETURN && result == 12, "yield or not return: %\n", result);
+
+    yielding.arguments.arg = -1;
+    status, result  = next(*yielding);
+    assert(status == .YIELD && result == 0, "yield or not yield: %\n", result);
+    status, result  = next(*yielding);
+    assert(status == .YIELD && result == 2, "yield or not yield: %\n", result);
+    status, result  = next(*yielding);
+    assert(status == .YIELD && result == 17, "yield or not yield: %\n", result);
+    status, result  = next(*yielding);
+    assert(status == .RETURN && result == 12, "yield or not return: %\n", result);
 }
 
 #scope_file
