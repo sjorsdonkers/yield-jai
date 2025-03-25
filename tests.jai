@@ -7,6 +7,7 @@
 
     t0 := seconds_since_init();
     test("./examples", "first", args);
+    test("./examples", "if", args);
     test("./examples", "while", args);
     print("Tests ran in % seconds\n", seconds_since_init() - t0);
 

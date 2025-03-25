@@ -310,7 +310,6 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 assert(else_case_id == -1);
                 if_block.else_block = else_block;
                 if else_exit == .END then self.waiting_sub_block = null;
-
             }
 
             array_add(*statements, if_block);
