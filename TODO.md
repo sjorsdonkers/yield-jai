@@ -54,24 +54,31 @@
   1. ifx like in condition
 - Code_Procedure_Call
   1. ifx like in arguments
-  1. macro_expansion_block
+  1. macro_expansion_block <--
   1. context_modification
 - Code_Declaration
   1. ifx like in expression
+  1. IS_CONSTANT
+  1. HAS_SCOPE_MODIFIER
+  1. IS_UNINITIALIZED
+  1. IS_ITERATOR
 - Code_If
   1. ifx like in condition
   1. IS_SWITCH_STATEMENT
   1. MARKED_AS_COMPLETE
+Code_Defer
+  1. yields inside deferred block
+Code_For
+  1. anything other than basic range based for loop
 
 # TODO
 
-Code_For
 Code_Compound_Declaration
-Code_Defer
 Code_Literal
 - Code_Struct_Literal_Info
 - Code_Array_Literal_Info
 - Code_Pointer_Literal_Info  
+
 Code_Cast
 Code_Case
 Code_Comma_Separated_Argument
