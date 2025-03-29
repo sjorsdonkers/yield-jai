@@ -22,9 +22,9 @@ yield_in_for :: () {
     fors :: () -> s64 {
         local:= 0;
         for 0..1 {
+            defer local += 2;
             local += 1;
             yield(local);
-            local += 2;
         }
         local += 9;
         return local;
