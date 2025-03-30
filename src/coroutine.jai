@@ -273,6 +273,16 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             if call.macro_expansion_block != null {
                 assert(self.current_sub_block == null);
                 self.current_sub_block = new_sub_block(call.macro_expansion_block, tprint("expand_%", self.statement_index));
+
+                // Remove all backticks from identifiers (not from declarations, defer, return, etc)
+                pointers: [..] *Code_Node;
+                get_recursive_nodes_breadth_first(self.current_sub_block.original, *pointers);
+                for pointers {
+                    if it.kind == .IDENT {
+                        it.(*Code_Ident).flags &= ~.HAS_SCOPE_MODIFIER;
+                    }
+                }
+
                 self.current_sub_block.is_expansion = true;
                 block, exit, case_id := process_block(self.current_sub_block, next_available_case_id);
                 assert(case_id == -1);
@@ -745,3 +755,4 @@ extract_state :: ($code: Code) -> Type #compile_time {
 #import "Compiler";
 #import "Program_Print";
 #import "Print_Vars";
+#import "Code_Visit";
