@@ -137,6 +137,7 @@ Block_Process :: struct {
     statement_index  := 0;
     current_sub_block: *Block_Process; // Can be null
     waiting_sub_block: *Block_Process; // Can be null
+    deferred_statements: [..]*Code_Node;
 
     set_me_to_case_id := -1;
     after_goto_case_id:= -1;
@@ -161,7 +162,8 @@ has_more :: (self: Block_Process) -> bool {
     res :=  (self.statement_index < self.original.statements.count)
         || self.current_sub_block != null
         || self.waiting_sub_block != null
-        || self.after_goto_case_id != -1;
+        || self.after_goto_case_id != -1
+        || self.deferred_statements.count > 0;
     return res;
 }
 
@@ -217,7 +219,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             if sub_exit == .END {
                 // We dropped of the end of a nested block, so we take over the case id
                 // However, we we may have started the sub block ourselves in which case it's ID are the same
-                assert(self.set_me_to_case_id == -1 || self.set_me_to_case_id == sub_case_id);
+                // assert(self.set_me_to_case_id == -1 || self.set_me_to_case_id == sub_case_id, "%-%", self.set_me_to_case_id, sub_case_id);
                 self.set_me_to_case_id = sub_case_id;
                 continue;
             } else {
@@ -227,12 +229,25 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             }
         }
 
-        // We may be at the end of the block, but still need to write the after goto statement
+        // We may be at the end of the block, but still need to write the after goto statement, deferred statements
         if self.statement_index >= self.original.statements.count {
-            assert(self.after_goto_case_id != -1);
-            array_add(*statements, set_position_node(self.after_goto_case_id));
-            self.after_goto_case_id = -1;
-            return_new_block(.NEW_CASE); // If we have a after goto we need to end the case as this the end of for example an if or loop block
+            assert(self.after_goto_case_id != -1 || self.deferred_statements.count > 0);
+
+            // Place each deferred statement at the end of the block
+            // Currently we do not support yielding from a deferred statement
+            // Note: defer is executed after evaluating all statements of the return block
+            //       returned locals mutated in the defer are not reflected in the return value
+            //       if defer returns it self that return wins, but the original return statements are still evaluated
+            //       if multiple defers return, all return expressions are evaluated, the first defers return wins
+            array_add(*statements, ..self.deferred_statements);
+            array_reset(*self.deferred_statements);
+
+            if self.after_goto_case_id != -1 {
+                array_add(*statements, set_position_node(self.after_goto_case_id));
+                self.after_goto_case_id = -1;
+                return_new_block(.NEW_CASE); // If we have a after goto we need to end the case as this the end of for example an if or loop block
+            }
+            break;
         }
 
         stmnt := self.original.statements[self.statement_index];
@@ -254,7 +269,8 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 return_new_block(.NEW_CASE, resume_case_id);
             }
         case .DECLARATION;
-            array_add(*statements, convert_declaration_to_assignment(stmnt.(*Code_Declaration)));
+            assigment := convert_declaration_to_assignment(stmnt.(*Code_Declaration));
+            if assigment then array_add(*statements, assigment);
             continue; // TODO compound declarations
         case .BLOCK;
             assert(self.current_sub_block == null);
@@ -268,6 +284,10 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             } else {
                 return_new_block(exit, self.current_sub_block.set_me_to_case_id);
             }
+        case .DEFER;
+            // Since we may end the scope early we need to physically move the deferred statements to the end of the block
+            array_add(*self.deferred_statements, stmnt);
+            continue;
         case .IF;
             if_block := stmnt.(*Code_If);
 
@@ -390,6 +410,81 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
 
             /// CASE 4 continues from the this Block_Process with after_while_case_id ///
             return_new_block(.NEW_CASE, after_while_case_id);
+        case .FOR;
+            for_stmnt := stmnt.(*Code_For);
+
+            log("For iteration_expression - %", for_stmnt.iteration_expression != null);
+            if for_stmnt.iteration_expression       logx(for_stmnt.iteration_expression);
+            log("For iteration_expression_right - %", for_stmnt.iteration_expression_right != null);
+            if for_stmnt.iteration_expression_right logx(for_stmnt.iteration_expression_right);
+            log("For ident_it - %", for_stmnt.ident_it != null);
+            if for_stmnt.ident_it                   logx(for_stmnt.ident_it);
+            log("For ident_it_index - %", for_stmnt.ident_it_index != null);
+            if for_stmnt.ident_it_index             logx(for_stmnt.ident_it_index);
+            log("For ident_decl - %", for_stmnt.ident_decl != null);
+            if for_stmnt.ident_decl                 logx(for_stmnt.ident_decl);
+            log("For index_decl - %", for_stmnt.index_decl != null);
+            if for_stmnt.index_decl                 logx(for_stmnt.index_decl);
+            log("For want_replacement_for_expansion - %", for_stmnt.want_replacement_for_expansion != null);
+            if for_stmnt.want_replacement_for_expansion logx(for_stmnt.want_replacement_for_expansion);
+            log("For want_pointer_expression - %", for_stmnt.want_pointer_expression != null);
+            if for_stmnt.want_pointer_expression    logx(for_stmnt.want_pointer_expression);
+            log("For want_reverse_expression - %", for_stmnt.want_reverse_expression != null);
+            if for_stmnt.want_reverse_expression    logx(for_stmnt.want_reverse_expression);
+            log("For macro_expansion_procedure_call - %", for_stmnt.macro_expansion_procedure_call != null);
+            if for_stmnt.macro_expansion_procedure_call logx(for_stmnt.macro_expansion_procedure_call);
+            log("For for_flags: %", for_stmnt.for_flags);
+
+            // We currently just do a hacky solutions for ranges and arrays that reuse the while implementation
+            // After macro expansion has been implemented we will revisit this and make a proper implementation
+            // Currently it will create 2 extra cases and an extra nested block due to the hacky implementation
+
+            // local = 0;
+            // {
+            //     it := 0; // TODO need to be careful that often it is just a copy instead of the actual iteration variable
+            //     while it <= 1{
+            //         defer it += 1; <-----------------
+            //         yield(local);
+            //         local += 1;
+            //     }
+            // }
+            assert(self.current_sub_block == null);
+
+            for_statements: [..]*Code_Node;
+            it_decl := compiler_get_nodes(#code it := 0).(*Code_Declaration);
+            it_decl.expression = for_stmnt.iteration_expression; // TODO rename name
+            array_add(*for_statements, it_decl);
+
+            while_stmnt := New(Code_While);
+            while_stmnt.kind = .WHILE;
+
+            while_stmnt.block = for_stmnt.block;
+            block_statements_with_defer: [..]*Code_Node;
+            array_add(*block_statements_with_defer, compiler_get_nodes(#code defer it += 1;)); // TODO set it to it_decl node
+            array_add(*block_statements_with_defer, ..for_stmnt.block.statements);
+            while_stmnt.block.statements = block_statements_with_defer;
+
+            while_condition := compiler_get_nodes(#code it <= 1).(*Code_Binary_Operator);
+            while_condition.right = for_stmnt.iteration_expression_right;
+            while_stmnt.condition = while_condition;
+            array_add(*for_statements, while_stmnt);
+
+            for_block  := New(Code_Block);
+            for_block.* = self.original.*;
+            for_block.statements = for_statements;
+            log("Prepared for block");
+            logx(for_block);
+
+            for_start_case_id := take_case_id(next_available_case_id);
+            after_for_case_id := take_case_id(next_available_case_id);
+            self.current_sub_block = new_sub_block(for_block, tprint("for_%", self.statement_index));
+            self.current_sub_block.set_me_to_case_id  = for_start_case_id;
+            self.current_sub_block.after_goto_case_id = after_for_case_id;
+
+            array_add(*statements, set_position_node(for_start_case_id));
+            array_add(*statements, compiler_get_nodes(#code continue));
+
+            return_new_block(.NEW_CASE, after_for_case_id);
         }
 
         array_add(*statements, stmnt);
@@ -509,12 +604,13 @@ convert_yield_to_return :: (yield_call: *Code_Procedure_Call) -> *Code_Return {
 }
 
 // Change `local := 42` to `local = 42`
+// Returns null if the type is not given a value (expression)
 convert_declaration_to_assignment :: (declaration: *Code_Declaration) -> *Code_Node {
     if declaration.flags & .IS_CONSTANT {
         return declaration;
     }
     assert(declaration.name != "");
-    assert(declaration.expression != null);
+    if declaration.expression == null then return null;
 
     ident := New(Code_Ident);
     ident.name = declaration.name;
@@ -589,12 +685,30 @@ extract_state :: ($code: Code) -> Type #compile_time {
                         print_to_builder(builder, "while_%: struct {\n", it_index);
                         print_block_members(builder, while_block.block);
                         print_to_builder(builder, "};\n");
+                    case .FOR;
+                        for_stmnt := it.(*Code_For);
+                        print_to_builder(builder, "for_%: struct {\n", it_index);
+
+                        assert(for_stmnt.macro_expansion_procedure_call == null);
+                        // This works for range and arrays, but not for_expansions
+                        print_to_builder(builder, "%: %;\n",     for_stmnt.ident_decl.name, get_type(for_stmnt.ident_decl.entry.type));
+                        if for_stmnt.index_decl {
+                            print_to_builder(builder, "%: %;\n", for_stmnt.index_decl.name, get_type(for_stmnt.index_decl.type));
+                        }
+
+                        print_to_builder(builder, "while_%: struct {\n", 1);
+                        print_block_members(builder, for_stmnt.block);
+                        print_to_builder(builder, "};\n");
+
+                        print_to_builder(builder, "};\n");
                     }
                 }
             }
             builder: String_Builder;
             print_block_members(*builder, header.body_or_null.block);
-            return builder_to_string(*builder);
+            state_struct := builder_to_string(*builder);
+            log(state_struct);
+            return state_struct;
         }
     }
     return Co_state;
@@ -604,3 +718,4 @@ extract_state :: ($code: Code) -> Type #compile_time {
 #import "Basic";
 #import "Compiler";
 #import "Program_Print";
+#import "Print_Vars";
