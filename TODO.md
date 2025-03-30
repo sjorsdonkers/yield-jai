@@ -55,8 +55,9 @@
 - Code_Procedure_Call
   1. ifx like in arguments
   1. macro_expansion_block
-    1. backticked defer, return, ..?
-    1. return values
+    1. `defer
+    1. `push_context
+    1. return values (unbackticked)
     1. unbackticked yield?
   1. context_modification
 - Code_Declaration

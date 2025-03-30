@@ -256,9 +256,20 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
 
         if stmnt.kind == {
         case .RETURN;
+            ret_node := stmnt.(*Code_Return);
+            if self.is_expansion && !(ret_node.return_flags & .IS_BACKTICKED) {
+                assert(false, "Not backticked return in expansion is not yet supported");
+            }
+            // Insert deferred statements
+            array_add(*statements, ..self.deferred_statements);
+            array_reset(*self.deferred_statements);
+
             array_add(*statements, set_position_node(0));
-            array_add(*statements, return_with_costatus(stmnt.(*Code_Return)));
-            return_new_block(.NEW_CASE);
+            array_add(*statements, return_with_costatus(ret_node));
+
+            self.after_goto_case_id = -1; // Since we are returning there is nowhere we need to go after
+            unreachable_case_id := take_case_id(next_available_case_id); // TODO prevent unreachable_case_id from being inserted
+            return_new_block(.NEW_CASE, unreachable_case_id);
         case .PROCEDURE_CALL;
             call := stmnt.(*Code_Procedure_Call);
             if call.procedure_expression.kind == .IDENT
