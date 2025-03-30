@@ -685,9 +685,12 @@ extract_state :: ($code: Code) -> Type #compile_time {
             print_block_members :: (builder: *String_Builder, block: *Code_Block) {
                 for block.members {
                     assert(it.kind == .DECLARATION);
-                    if it.(*Code_Declaration).flags & .IS_CONSTANT then continue;
+                    member := it.(*Code_Declaration);
+                    if member.flags & .IS_CONSTANT then continue;
+                    // Backticked declarations from expansions should only be added at the call site's block where it is imported
+                    if member.flags & .HAS_SCOPE_MODIFIER && !(member.flags & .IS_IMPORTED) then continue;
 
-                    print_to_builder(builder, "%: %;\n", it.name, get_type(it.type));
+                    print_to_builder(builder, "%: %; // %\n", it.name, get_type(it.type), it.(*Code_Declaration).flags);
                 }
                 for block.statements {
                     if it.kind == {
