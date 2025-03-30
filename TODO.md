@@ -54,7 +54,11 @@
   1. ifx like in condition
 - Code_Procedure_Call
   1. ifx like in arguments
-  1. macro_expansion_block <--
+  1. macro_expansion_block
+    1. backticked in
+    1. backticked out
+    1. return values
+    1. unbackticked yield?
   1. context_modification
 - Code_Declaration
   1. ifx like in expression

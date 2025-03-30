@@ -11,6 +11,7 @@
     test("./examples", "while", args);
     test("./examples", "for", args);
     test("./examples", "defer", args);
+    test("./examples", "expand", args);
     print("Tests ran in % seconds\n", seconds_since_init() - t0);
 
     set_build_options_dc(.{do_output=false});

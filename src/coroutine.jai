@@ -142,6 +142,7 @@ Block_Process :: struct {
     set_me_to_case_id := -1;
     after_goto_case_id:= -1;
     original_is_processed := false;
+    is_expansion := false;
 }
 
 new_sub_block :: (block: *Code_Block, name: string) -> *Block_Process {
@@ -267,6 +268,21 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 array_add(*statements, convert_yield_to_return(call));
 
                 return_new_block(.NEW_CASE, resume_case_id);
+            }
+
+            if call.macro_expansion_block != null {
+                assert(self.current_sub_block == null);
+                self.current_sub_block = new_sub_block(call.macro_expansion_block, tprint("expand_%", self.statement_index));
+                self.current_sub_block.is_expansion = true;
+                block, exit, case_id := process_block(self.current_sub_block, next_available_case_id);
+                assert(case_id == -1);
+                array_add(*statements, block);
+                if exit == .END {
+                    self.current_sub_block = null;
+                    continue;
+                } else {
+                    return_new_block(exit, self.current_sub_block.set_me_to_case_id);
+                }
             }
         case .DECLARATION;
             assigment := convert_declaration_to_assignment(stmnt.(*Code_Declaration));
@@ -606,11 +622,9 @@ convert_yield_to_return :: (yield_call: *Code_Procedure_Call) -> *Code_Return {
 // Change `local := 42` to `local = 42`
 // Returns null if the type is not given a value (expression)
 convert_declaration_to_assignment :: (declaration: *Code_Declaration) -> *Code_Node {
-    if declaration.flags & .IS_CONSTANT {
-        return declaration;
-    }
+    if declaration.flags & .IS_CONSTANT then return declaration;
     assert(declaration.name != "");
-    if declaration.expression == null then return null;
+    if declaration.expression == null   then return null;
 
     ident := New(Code_Ident);
     ident.name = declaration.name;
@@ -660,6 +674,9 @@ extract_state :: ($code: Code) -> Type #compile_time {
 
             print_block_members :: (builder: *String_Builder, block: *Code_Block) {
                 for block.members {
+                    assert(it.kind == .DECLARATION);
+                    if it.(*Code_Declaration).flags & .IS_CONSTANT then continue;
+
                     print_to_builder(builder, "%: %;\n", it.name, get_type(it.type));
                 }
                 for block.statements {
@@ -700,6 +717,15 @@ extract_state :: ($code: Code) -> Type #compile_time {
                         print_block_members(builder, for_stmnt.block);
                         print_to_builder(builder, "};\n");
 
+                        print_to_builder(builder, "};\n");
+                    case .PROCEDURE_CALL;
+                        call := it.(*Code_Procedure_Call);
+                        if call.macro_expansion_block == null then continue;
+                        if call.procedure_expression.kind == .IDENT
+                            && "yield" == call.procedure_expression.(*Code_Ident).name then continue;
+
+                        print_to_builder(builder, "expand_%: struct {\n", it_index);
+                        print_block_members(builder, call.macro_expansion_block);
                         print_to_builder(builder, "};\n");
                     }
                 }
