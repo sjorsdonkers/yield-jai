@@ -59,6 +59,9 @@
     1. `push_context
     1. return values (unbackticked)
     1. unbackticked yield?
+    1. procedure header constants block?
+    1. const arguments
+    1. usinged param (should be using in struct, member now gets imported to block scope, we do not want that)
   1. context_modification
 - Code_Declaration
   1. ifx like in expression
@@ -66,6 +69,7 @@
   1. HAS_SCOPE_MODIFIER
   1. IS_UNINITIALIZED
   1. IS_ITERATOR
+  1. usinged 
 - Code_If
   1. ifx like in condition
   1. IS_SWITCH_STATEMENT
