@@ -74,15 +74,14 @@ main :: () {
 
 expanding_for :: () {
     // The plan
-    // Add optional member to Process_Block, it_rename and it_index_rename
-    // When set any ..
+    // Add optional member to Process_Block, Rename in the insert directive, block
 
-    // Either rename asd->it in #code or it -> asd in macro
+    ////////// Why are al set positions 0
     fors :: () -> s64 {
         local: Holder;
         array_add(*local.values, 6, 8);
-        for asd: local {
-            yield(asd);
+        for local {
+            yield(it);
         }
         return 9;
     }
