@@ -450,27 +450,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
         case .FOR;
             for_stmnt := stmnt.(*Code_For);
 
-            log("For iteration_expression - %", for_stmnt.iteration_expression != null);
-            if for_stmnt.iteration_expression       logx(for_stmnt.iteration_expression);
-            log("For iteration_expression_right - %", for_stmnt.iteration_expression_right != null);
-            if for_stmnt.iteration_expression_right logx(for_stmnt.iteration_expression_right);
-            log("For ident_it - %", for_stmnt.ident_it != null);
-            if for_stmnt.ident_it                   logx(for_stmnt.ident_it);
-            log("For ident_it_index - %", for_stmnt.ident_it_index != null);
-            if for_stmnt.ident_it_index             logx(for_stmnt.ident_it_index);
-            log("For ident_decl - %", for_stmnt.ident_decl != null);
-            if for_stmnt.ident_decl                 logx(for_stmnt.ident_decl);
-            log("For index_decl - %", for_stmnt.index_decl != null);
-            if for_stmnt.index_decl                 logx(for_stmnt.index_decl);
-            log("For want_replacement_for_expansion - %", for_stmnt.want_replacement_for_expansion != null);
-            if for_stmnt.want_replacement_for_expansion logx(for_stmnt.want_replacement_for_expansion);
-            log("For want_pointer_expression - %", for_stmnt.want_pointer_expression != null);
-            if for_stmnt.want_pointer_expression    logx(for_stmnt.want_pointer_expression);
-            log("For want_reverse_expression - %", for_stmnt.want_reverse_expression != null);
-            if for_stmnt.want_reverse_expression    logx(for_stmnt.want_reverse_expression);
-            log("For macro_expansion_procedure_call - %", for_stmnt.macro_expansion_procedure_call != null);
-            if for_stmnt.macro_expansion_procedure_call logx(for_stmnt.macro_expansion_procedure_call);
-            log("For for_flags: %", for_stmnt.for_flags);
+            explain_for(for_stmnt);
 
             // We currently just do a hacky solutions for ranges and arrays that reuse the while implementation
             // After macro expansion has been implemented we will revisit this and make a proper implementation
@@ -489,19 +469,23 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
 
             for_statements: [..]*Code_Node;
             it_decl := compiler_get_nodes(#code it := 0).(*Code_Declaration);
-            it_decl.expression = for_stmnt.iteration_expression; // TODO rename name
-            array_add(*for_statements, it_decl);
+            it_decl.name = for_stmnt.ident_it.name;
+            it_decl.expression = for_stmnt.iteration_expression;
+            array_add(*for_statements, it_decl); // TODO it_index
 
             while_stmnt := New(Code_While);
             while_stmnt.kind = .WHILE;
 
             while_stmnt.block = for_stmnt.block;
             block_statements_with_defer: [..]*Code_Node;
-            array_add(*block_statements_with_defer, compiler_get_nodes(#code defer it += 1;)); // TODO set it to it_decl node
+            defer_increment_node := compiler_get_nodes(#code defer it += 1;).(*Code_Defer);
+            defer_increment_node.block.statements[0].(*Code_Binary_Operator).left = for_stmnt.ident_it;
+            array_add(*block_statements_with_defer, defer_increment_node);
             array_add(*block_statements_with_defer, ..for_stmnt.block.statements);
             while_stmnt.block.statements = block_statements_with_defer;
 
             while_condition := compiler_get_nodes(#code it <= 1).(*Code_Binary_Operator);
+            while_condition.left = for_stmnt.ident_it;
             while_condition.right = for_stmnt.iteration_expression_right;
             while_stmnt.condition = while_condition;
             array_add(*for_statements, while_stmnt);
@@ -697,7 +681,7 @@ extract_state :: ($code: Code) -> Type #compile_time {
                 for block.members {
                     assert(it.kind == .DECLARATION);
                     member := it.(*Code_Declaration);
-                    if member.flags & .IS_CONSTANT then continue;
+                    if member.flags & .IS_CONSTANT then continue; // TODO need to be in there too, might be better to use code instead of string
                     // Backticked declarations from expansions should only be added at the call site's block where it is imported
                     if member.flags & .HAS_SCOPE_MODIFIER && !(member.flags & .IS_IMPORTED) then continue;
 
@@ -730,16 +714,20 @@ extract_state :: ($code: Code) -> Type #compile_time {
                         for_stmnt := it.(*Code_For);
                         print_to_builder(builder, "for_%: struct {\n", it_index);
 
-                        assert(for_stmnt.macro_expansion_procedure_call == null);
-                        // This works for range and arrays, but not for_expansions
-                        print_to_builder(builder, "%: %;\n",     for_stmnt.ident_decl.name, get_type(for_stmnt.ident_decl.entry.type));
-                        if for_stmnt.index_decl {
-                            print_to_builder(builder, "%: %;\n", for_stmnt.index_decl.name, get_type(for_stmnt.index_decl.type));
-                        }
 
-                        print_to_builder(builder, "while_%: struct {\n", 1);
-                        print_block_members(builder, for_stmnt.block);
-                        print_to_builder(builder, "};\n");
+                        if for_stmnt.macro_expansion_procedure_call {
+                            print_block_members(builder, for_stmnt.macro_expansion_procedure_call.macro_expansion_block);
+                        } else {
+                            // This works for range and arrays, but not for_expansions
+                            print_to_builder(builder, "%: %;\n",     for_stmnt.ident_decl.name, get_type(for_stmnt.ident_decl.entry.type));
+                            if for_stmnt.index_decl {
+                                print_to_builder(builder, "%: %;\n", for_stmnt.index_decl.name, get_type(for_stmnt.index_decl.type));
+                            }
+
+                            print_to_builder(builder, "while_%: struct {\n", 1);
+                            print_block_members(builder, for_stmnt.block);
+                            print_to_builder(builder, "};\n");
+                        }
 
                         print_to_builder(builder, "};\n");
                     case .PROCEDURE_CALL;
@@ -770,3 +758,65 @@ extract_state :: ($code: Code) -> Type #compile_time {
 #import "Program_Print";
 #import "Print_Vars";
 #import "Code_Visit";
+
+explain_for :: (for_stmnt: *Code_For) {
+    log("===========================================");
+
+    log("For iteration_expression - %", for_stmnt.iteration_expression != null);
+    if for_stmnt.iteration_expression       logx(for_stmnt.iteration_expression);
+    log("For iteration_expression_right - %", for_stmnt.iteration_expression_right != null);
+    if for_stmnt.iteration_expression_right logx(for_stmnt.iteration_expression_right);
+    log("For block - %", for_stmnt.block != null);
+    if for_stmnt.block {
+        logx(for_stmnt.block);
+        log("Block members:");
+        for for_stmnt.block.members {
+            log("- %: %;", it.(*Code_Declaration).name, get_type(it.(*Code_Declaration).type));
+        }
+        log("Block statements:");
+        for for_stmnt.block.statements {
+            if it.kind == .DECLARATION {
+                log("- % %", it.(*Code_Declaration).name, get_type(it.(*Code_Declaration).type));
+                logx(it); // why do it and it_index not show up, any special flags?
+
+            } else {
+                log("- %", it.*);
+            }
+        }
+    }
+    log("For ident_it - %", for_stmnt.ident_it != null);
+    if for_stmnt.ident_it                   logx(for_stmnt.ident_it);
+    log("For ident_it_index - %", for_stmnt.ident_it_index != null);
+    if for_stmnt.ident_it_index             logx(for_stmnt.ident_it_index);
+    log("For ident_decl - %", for_stmnt.ident_decl != null);
+    if for_stmnt.ident_decl                 logx(for_stmnt.ident_decl);
+    log("For index_decl - %", for_stmnt.index_decl != null);
+    if for_stmnt.index_decl                 logx(for_stmnt.index_decl);
+    log("For want_replacement_for_expansion - %", for_stmnt.want_replacement_for_expansion != null);
+    if for_stmnt.want_replacement_for_expansion logx(for_stmnt.want_replacement_for_expansion);
+    log("For want_pointer_expression - %", for_stmnt.want_pointer_expression != null);
+    if for_stmnt.want_pointer_expression    logx(for_stmnt.want_pointer_expression);
+    log("For want_reverse_expression - %", for_stmnt.want_reverse_expression != null);
+    if for_stmnt.want_reverse_expression    logx(for_stmnt.want_reverse_expression);
+    log("For for_flags: %", for_stmnt.for_flags);
+    log("For macro_expansion_procedure_call - %", for_stmnt.macro_expansion_procedure_call != null);
+    if for_stmnt.macro_expansion_procedure_call {
+        logx(for_stmnt.macro_expansion_procedure_call);
+        log("\nMacro expansion block");
+        logx(for_stmnt.macro_expansion_procedure_call.macro_expansion_block);
+        log("Macro block members:");
+        for for_stmnt.macro_expansion_procedure_call.macro_expansion_block.members {
+            log("- % %", it.(*Code_Declaration).name, get_type(it.(*Code_Declaration).type));
+        }
+        log("Macro block statements:");
+        for for_stmnt.macro_expansion_procedure_call.macro_expansion_block.statements {
+            if it.kind == .DECLARATION {
+                log("- % %", it.(*Code_Declaration).name, get_type(it.(*Code_Declaration).type));
+            } else {
+                log("- %", it.*);
+                explain_for(xx it);
+            }
+        }
+    }
+    log("===========================================");
+}

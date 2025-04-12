@@ -62,7 +62,7 @@
   1. context_modification
 - Code_Declaration
   1. ifx like in expression
-  1. IS_CONSTANT
+  1. IS_CONSTANT in state!
   1. HAS_SCOPE_MODIFIER
   1. IS_UNINITIALIZED
   1. IS_ITERATOR
