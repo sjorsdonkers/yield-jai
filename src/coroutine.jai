@@ -283,9 +283,25 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
 
             if call.macro_expansion_block != null {
                 assert(self.current_sub_block == null);
-                self.current_sub_block = new_sub_block(call.macro_expansion_block, tprint("expand_%", self.statement_index));
+                scope_name := tprint("expand_%", self.statement_index);
+                self.current_sub_block = new_sub_block(call.macro_expansion_block, scope_name);
 
-                // Remove all backticks from identifiers (not from declarations, defer, return, etc)
+                // Set the call argument values to the expand state
+                // We need to set the call arguments from the current scope to prevent getting current literals used in the assignment shadowed
+                // expand_2.bob = bob;
+                header := call.resolved_procedure_expression.(*Code_Procedure_Header);
+                for value_code: call.arguments_sorted {
+                    arg := header.arguments[it_index].(*Code_Declaration); // We are assuming the order of call and procedure args is the same
+
+                    arg_assignment := compiler_get_nodes(#code scope.procarg = callarg).(*Code_Binary_Operator);
+                    target := arg_assignment.left.(*Code_Binary_Operator);
+                    target.left.(*Code_Ident).name = scope_name;
+                    target.right.(*Code_Ident).name = arg.name;
+                    arg_assignment.right = value_code;
+                    array_add(*statements, arg_assignment);
+                }
+
+                // Remove all backticks from identifiers (not from declarations, defer, return, push_context)
                 pointers: [..] *Code_Node;
                 get_recursive_nodes_breadth_first(self.current_sub_block.original, *pointers);
                 for pointers {
@@ -749,7 +765,15 @@ extract_state :: ($code: Code) -> Type #compile_time {
                             && "yield" == call.procedure_expression.(*Code_Ident).name then continue;
 
                         print_to_builder(builder, "expand_%: struct {\n", it_index);
+
+                        assert(call.resolved_procedure_expression.kind == .PROCEDURE_HEADER);
+                        header := call.resolved_procedure_expression.(*Code_Procedure_Header);
+                        for decl: header.arguments {
+                            print_declaration(builder, decl, true);
+                            append(builder, ";\n");
+                        }
                         print_block_members(builder, call.macro_expansion_block);
+
                         print_to_builder(builder, "};\n");
                     }
                 }
