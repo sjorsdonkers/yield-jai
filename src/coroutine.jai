@@ -461,7 +461,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             for_stmnt := stmnt.(*Code_For);
             assert(self.current_sub_block == null);
 
-            explain_for(for_stmnt);
+            // explain_for(for_stmnt);
 
             if for_stmnt.macro_expansion_procedure_call {
                 call := for_stmnt.macro_expansion_procedure_call;
@@ -730,82 +730,85 @@ extract_state :: ($code: Code) -> Type #compile_time {
             root, nodes := compiler_get_nodes(code); assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
             header := root.(*Code_Procedure_Header); assert(header.body_or_null != null);
 
-            print_block_members :: (builder: *String_Builder, block: *Code_Block) {
-                for block.members {
-                    assert(it.kind == .DECLARATION);
-                    member := it.(*Code_Declaration);
-                    if member.flags & .IS_CONSTANT then continue; // TODO need to be in there too, might be better to use code instead of string
-                    // Backticked declarations from expansions should only be added at the call site's block where it is imported
-                    if member.flags & .HAS_SCOPE_MODIFIER && !(member.flags & (.IS_IMPORTED | .IS_ITERATOR)) then continue;
+            print_block_members :: (builder: *String_Builder, node: *Code_Node, index:=-1) {
+                if node.kind == {
+                case .BLOCK;
+                    block := node.(*Code_Block);
+                    for block.members {
+                        assert(it.kind == .DECLARATION);
+                        member := it.(*Code_Declaration);
+                        if member.flags & .IS_CONSTANT then continue; // TODO need to be in there too, might be better to use code instead of string
+                        // Backticked declarations from expansions should only be added at the call site's block where it is imported
+                        if member.flags & .HAS_SCOPE_MODIFIER && !(member.flags & (.IS_IMPORTED | .IS_ITERATOR)) then continue;
 
-                    print_to_builder(builder, "%: %; // %\n", it.name, get_type(it.type), it.(*Code_Declaration).flags);
-                }
-                for block.statements {
-                    if it.kind == {
-                    case .BLOCK;
-                        sub_block := it.(*Code_Block);
-                        print_to_builder(builder, "block_%: struct {\n", it_index); // The name is used to `using` the state in the procedure [also shadowing is allowed]
-                        print_block_members(builder, sub_block);
-                        print_to_builder(builder, "};\n");
-                    case .IF;
-                        if_block := it.(*Code_If);
-                        print_to_builder(builder, "then_%: struct {\n", it_index);
-                        print_block_members(builder, if_block.then_block);
-                        print_to_builder(builder, "};\n");
-
-                        if if_block.else_block != null {
-                            print_to_builder(builder, "else_%: struct {\n", it_index);
-                            print_block_members(builder, if_block.else_block);
-                            print_to_builder(builder, "};\n");
-                        }
-                    case .WHILE;
-                        while_block := it.(*Code_While);
-                        print_to_builder(builder, "while_%: struct {\n", it_index);
-                        print_block_members(builder, while_block.block);
-                        print_to_builder(builder, "};\n");
-                    case .FOR;
-                        for_stmnt := it.(*Code_For);
-                        print_to_builder(builder, "for_%: struct {\n", it_index);
-
-                        if for_stmnt.macro_expansion_procedure_call {
-                            print_block_members(builder, for_stmnt.macro_expansion_procedure_call.macro_expansion_block);
-                        } else {
-                            // This works for range and arrays, but not for_expansions
-                            print_to_builder(builder, "%: %;\n",     for_stmnt.ident_decl.name, get_type(for_stmnt.ident_decl.entry.type));
-                            if for_stmnt.index_decl {
-                                print_to_builder(builder, "%: %;\n", for_stmnt.index_decl.name, get_type(for_stmnt.index_decl.type));
-                            }
-
-                            print_to_builder(builder, "while_%: struct {\n", 1);
-                            print_block_members(builder, for_stmnt.block);
-                            print_to_builder(builder, "};\n");
-                        }
-
-                        print_to_builder(builder, "};\n");
-                    case .PROCEDURE_CALL;
-                        call := it.(*Code_Procedure_Call);
-                        if call.macro_expansion_block == null then continue;
-                        if call.procedure_expression.kind == .IDENT
-                            && "yield" == call.procedure_expression.(*Code_Ident).name then continue;
-
-                        print_to_builder(builder, "expand_%: struct {\n", it_index);
-
-                        // The arguments of the expansion need to be captured in the state
-                        // TODO using arguments causes the members to be inserted as .IS_IMPORTED
-                        // Since we need the same value to be accessible both ways we should instead have them only the using in the state, not the members.
-                        assert(call.resolved_procedure_expression.kind == .PROCEDURE_HEADER);
-                        header := call.resolved_procedure_expression.(*Code_Procedure_Header);
-                        for decl: header.arguments {
-                            print_declaration(builder, decl, true);
-                            append(builder, ";\n");
-                        }
-                        print_block_members(builder, call.macro_expansion_block);
-
-                        print_to_builder(builder, "};\n");
-                    case .DIRECTIVE_INSERT;
-                        insert_code := stmnt.(*Code_Directive_Insert);
-
+                        print_to_builder(builder, "%: %; // %\n", it.name, get_type(it.type), it.(*Code_Declaration).flags);
                     }
+
+                    for block.statements {
+                        if it.kind == .BLOCK print_to_builder(builder, "block_%: struct {\n", it_index); // The name is used to `using` the state in the procedure [also shadowing is allowed]
+                        print_block_members(builder, it, it_index);
+                        if it.kind == .BLOCK print_to_builder(builder, "};\n");
+                    }
+                case .IF;
+                    if_block := node.(*Code_If);
+                    print_to_builder(builder, "then_%: struct {\n", index);
+                    print_block_members(builder, if_block.then_block);
+                    print_to_builder(builder, "};\n");
+
+                    if if_block.else_block != null {
+                        print_to_builder(builder, "else_%: struct {\n", index);
+                        print_block_members(builder, if_block.else_block);
+                        print_to_builder(builder, "};\n");
+                    }
+                case .WHILE;
+                    while_block := node.(*Code_While);
+                    print_to_builder(builder, "while_%: struct {\n", index);
+                    print_block_members(builder, while_block.block);
+                    print_to_builder(builder, "};\n");
+                case .FOR;
+                    for_stmnt := node.(*Code_For);
+                    print_to_builder(builder, "for_%: struct {\n", index);
+
+                    if for_stmnt.macro_expansion_procedure_call {
+                        print_block_members(builder, for_stmnt.macro_expansion_procedure_call.macro_expansion_block);
+                    } else {
+                        // This works for range and arrays, but not for_expansions
+                        print_to_builder(builder, "%: %;\n",     for_stmnt.ident_decl.name, get_type(for_stmnt.ident_decl.entry.type));
+                        if for_stmnt.index_decl {
+                            print_to_builder(builder, "%: %;\n", for_stmnt.index_decl.name, get_type(for_stmnt.index_decl.type));
+                        }
+
+                        print_to_builder(builder, "while_%: struct {\n", 1);
+                        print_block_members(builder, for_stmnt.block);
+                        print_to_builder(builder, "};\n");
+                    }
+
+                    print_to_builder(builder, "};\n");
+                case .PROCEDURE_CALL;
+                    call := node.(*Code_Procedure_Call);
+                    if call.macro_expansion_block == null then return;
+                    if call.procedure_expression.kind == .IDENT
+                        && "yield" == call.procedure_expression.(*Code_Ident).name then return;
+
+                    print_to_builder(builder, "expand_%: struct {\n", index);
+
+                    // The arguments of the expansion need to be captured in the state
+                    // TODO using arguments causes the members to be inserted as .IS_IMPORTED
+                    // Since we need the same value to be accessible both ways we should instead have them only the using in the state, not the members.
+                    assert(call.resolved_procedure_expression.kind == .PROCEDURE_HEADER);
+                    header := call.resolved_procedure_expression.(*Code_Procedure_Header);
+                    for decl: header.arguments {
+                        print_declaration(builder, decl, true);
+                        append(builder, ";\n");
+                    }
+                    print_block_members(builder, call.macro_expansion_block);
+
+                    print_to_builder(builder, "};\n");
+                case .DIRECTIVE_INSERT;
+                    insert_code := node.(*Code_Directive_Insert);
+                    if insert_code.expansion.kind == .BLOCK print_to_builder(builder, "block_%: struct {\n", index + 1); // +1 is a hack as for will insert a defer causing this to move down 1
+                    print_block_members(builder, insert_code.expansion, index);
+                    if insert_code.expansion.kind == .BLOCK print_to_builder(builder, "};\n");
                 }
             }
             builder: String_Builder;
