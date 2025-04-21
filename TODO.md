@@ -53,6 +53,7 @@
   1. ifx like in condition
 - Code_Procedure_Call
   1. ifx like in arguments
+  1. varargs
   1. macro_expansion_block
     1. `defer
     1. `push_context
@@ -104,3 +105,8 @@ Code_Placeholder
 
 # Remove state for code blocks that do not contain yield/return at any level
 # Propagate is_expansion for unbackticked return in nested block
+
+
+# Compiler
+Need *Type_info or type -> Code_Type_Instantiation for: `val := 7` to `val: i32`
+Naming error? `Code_For.ident_decl` -> `Code_For.it_decl`
