@@ -15,7 +15,6 @@
 - Code_Directive_Library
 - Code_Directive_Wildcard
 - Code_Directive_Exists
-- Code_Directive_Insert
 - Code_Struct
 - Code_Using
 - Code_Asm
@@ -65,7 +64,7 @@
   1. context_modification
 - Code_Declaration
   1. ifx like in expression
-  1. IS_CONSTANT
+  1. IS_CONSTANT in state!!
   1. HAS_SCOPE_MODIFIER
   1. IS_UNINITIALIZED
   1. IS_ITERATOR
@@ -74,10 +73,16 @@
   1. ifx like in condition
   1. IS_SWITCH_STATEMENT
   1. MARKED_AS_COMPLETE
+  1. Union state structs of all branches (optimization)
 Code_Defer
   1. yields inside deferred block
 Code_For
   1. anything other than basic range based for loop
+- Code_Directive_Insert
+  1. scope
+  1. break, continue, remove
+  1. internal?
+  1. only insert when needed
 
 # TODO
 
@@ -96,3 +101,6 @@ Code_Make_Varargs
 Code_Loop_Control
 Code_Type_Definition
 Code_Placeholder
+
+# Remove state for code blocks that do not contain yield/return at any level
+# Propagate is_expansion for unbackticked return in nested block
