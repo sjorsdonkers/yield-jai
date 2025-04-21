@@ -320,7 +320,11 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 }
             }
         case .DECLARATION;
-            assigment := convert_declaration_to_assignment(stmnt.(*Code_Declaration));
+            decl := stmnt.(*Code_Declaration);
+            // Constants are kept in the state so we should remove them from the code
+            if decl.flags & .IS_CONSTANT then continue;
+
+            assigment := convert_declaration_to_assignment(decl);
             if assigment then array_add(*statements, assigment);
             continue; // TODO compound declarations
         case .BLOCK;
@@ -558,7 +562,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
         case .DIRECTIVE_INSERT;
             insert_code := stmnt.(*Code_Directive_Insert);
             // We should insert the code if it contains a yield statement
-            // TODO scope, break, continue, remove, internal
+            // TODO scope, break, continue, remove, internal, expression
             if !(insert_code.is_internal || insert_code.scope_redirection || insert_code.break_replacement || insert_code.continue_replacement || insert_code.remove_replacement) {
                 // We just replace the insert statement and re-evaluate the statement
                 self.original.statements[self.statement_index] = insert_code.expansion;
@@ -741,106 +745,137 @@ extract_arguments :: ($code: Code) -> Type #compile_time {
 }
 
 extract_state :: ($code: Code) -> Type #compile_time {
-    Co_state :: struct {
-        #insert -> string {
-            root, nodes := compiler_get_nodes(code); assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
-            header := root.(*Code_Procedure_Header); assert(header.body_or_null != null);
+    type_only_decl :: (decl: *Code_Declaration) -> *Code_Node {
+        if decl.flags & .IS_CONSTANT {
+            // Constants need to be in the state as well as they need to be accessible from every yield block
+            // Constant can still be expression so they can use the original declaration.
+            return decl;
+        }
+        if decl.type_inst {
+            // We have the Code_Type_Instantiation so we it is easy to build the declaration
+            root := compiler_get_nodes(#code name: i32).(*Code_Declaration); // flags?
+            root.name = decl.name;
+            root.type_inst = decl.type_inst;
+            return root;
+        }
 
-            print_block_members :: (builder: *String_Builder, node: *Code_Node, index:=-1) {
-                if node.kind == {
-                case .BLOCK;
-                    block := node.(*Code_Block);
-                    for block.members {
-                        assert(it.kind == .DECLARATION);
-                        member := it.(*Code_Declaration);
-                        if member.flags & .IS_CONSTANT then continue; // TODO need to be in there too, might be better to use code instead of string
-                        // Backticked declarations from expansions should only be added at the call site's block where it is imported
-                        if member.flags & .HAS_SCOPE_MODIFIER && !(member.flags & (.IS_IMPORTED | .IS_ITERATOR)) then continue;
+        // We want to modify code from `val := 7` to `val: i32`
+        // We have the Type_Info -> type -> "TheType" available but we need a Code_Type_Instantiation
+        insert_type := compiler_get_nodes(#code #insert "the_name: TheType").(*Code_Directive_Insert);
+        insert_type.expression.(*Code_Literal)._string = tprint("%: %;", decl.name, get_type(decl.type));
+        return insert_type;
+    }
+    add_state_members :: (statements: *[..]*Code_Node, node: *Code_Node, index:=-1) {
+        add_nest :: (name: string, statements: *[..]*Code_Node, it: *Code_Node, it_index:=-1) {
+            block_statements: [..]*Code_Node;
+            add_state_members(*block_statements, it, it_index);
 
-                        print_to_builder(builder, "%: %; // %\n", it.name, get_type(it.type), it.(*Code_Declaration).flags);
-                    }
+            root := compiler_get_nodes(#code nest_name: struct {}).(*Code_Declaration);
+            root.name = name;
+            root.type_inst.type_valued_expression.(*Code_Struct).block.statements = block_statements;
+            array_add(statements, root);
+        }
+        if node.kind == {
+        case .BLOCK;
+            block := node.(*Code_Block);
+            for block.members {
+                assert(it.kind == .DECLARATION);
+                member := it.(*Code_Declaration);
+                // Backticked declarations from expansions should only be added at the call site's block where it is imported
+                if member.flags & .HAS_SCOPE_MODIFIER && !(member.flags & (.IS_IMPORTED | .IS_ITERATOR)) then continue;
 
-                    for block.statements {
-                        if it.kind == .BLOCK print_to_builder(builder, "block_%: struct {\n", it_index); // The name is used to `using` the state in the procedure [also shadowing is allowed]
-                        print_block_members(builder, it, it_index);
-                        if it.kind == .BLOCK print_to_builder(builder, "};\n");
-                    }
-                case .IF;
-                    if_block := node.(*Code_If);
-                    print_to_builder(builder, "then_%: struct {\n", index);
-                    print_block_members(builder, if_block.then_block);
-                    print_to_builder(builder, "};\n");
+                array_add(statements, type_only_decl(xx it));
+            }
 
-                    if if_block.else_block != null {
-                        print_to_builder(builder, "else_%: struct {\n", index);
-                        print_block_members(builder, if_block.else_block);
-                        print_to_builder(builder, "};\n");
-                    }
-                case .WHILE;
-                    while_stmnt := node.(*Code_While);
-                    print_to_builder(builder, "while_%: struct {\n", index);
-                    print_block_members(builder, while_stmnt.block);
-                    print_to_builder(builder, "};\n");
-                case .FOR;
-                    for_stmnt := node.(*Code_For);
-                    print_to_builder(builder, "for_%: struct {\n", index);
-
-                    if for_stmnt.macro_expansion_procedure_call {
-                        print_block_members(builder, for_stmnt.macro_expansion_procedure_call.macro_expansion_block);
-                    } else {
-                        // This works for range and arrays, but not for_expansions which have void types
-                        print_to_builder(builder, "%: %;\n",     for_stmnt.ident_decl.name, get_type(for_stmnt.ident_decl.entry.type));
-                        if for_stmnt.index_decl {
-                            print_to_builder(builder, "%: %;\n", for_stmnt.index_decl.name, get_type(for_stmnt.index_decl.type));
-                        }
-
-                        print_to_builder(builder, "while_%: struct {\n", 1);
-                        print_block_members(builder, for_stmnt.block);
-                        print_to_builder(builder, "};\n");
-                    }
-
-                    print_to_builder(builder, "};\n");
-                case .PROCEDURE_CALL;
-                    call := node.(*Code_Procedure_Call);
-                    if call.macro_expansion_block == null then return;
-                    if call.procedure_expression.kind == .IDENT
-                        && "yield" == call.procedure_expression.(*Code_Ident).name then return;
-
-                    print_to_builder(builder, "expand_%: struct {\n", index);
-
-                    // The arguments of the expansion need to be captured in the state
-                    // TODO using arguments causes the members to be inserted as .IS_IMPORTED
-                    // Since we need the same value to be accessible both ways we should instead have them only the using in the state, not the members.
-                    assert(call.resolved_procedure_expression.kind == .PROCEDURE_HEADER);
-                    header := call.resolved_procedure_expression.(*Code_Procedure_Header);
-                    for decl: header.arguments {
-                        print_declaration(builder, decl, true);
-                        append(builder, ";\n");
-                    }
-                    print_block_members(builder, call.macro_expansion_block);
-
-                    print_to_builder(builder, "};\n");
-                case .DIRECTIVE_INSERT;
-                    insert_code := node.(*Code_Directive_Insert);
-                    // When generating the code we need to insert the code as it may contain a yield or return.
-                    // This is specifically important when the the yield is for the body of a for_expansion.
-                    // - When the scope is `internal` we should not make a new scope
-                    // - If the insert is in a redirected scope, I have no idea what to do
-                    // - Break, continue, and remove should not be allowed to yield for now.
-                    if !(insert_code.is_internal || insert_code.scope_redirection || insert_code.break_replacement || insert_code.continue_replacement || insert_code.remove_replacement) {
-                        if insert_code.expansion.kind == .BLOCK print_to_builder(builder, "block_%: struct {\n", index + 1); // +1 is a hack as for will insert a defer causing this to move down 1
-                        print_block_members(builder, insert_code.expansion, index);
-                        if insert_code.expansion.kind == .BLOCK print_to_builder(builder, "};\n");
-                    }
+            for block.statements {
+                if it.kind == .BLOCK {
+                    add_nest(tprint("block_%", it_index), statements, it, it_index);
+                } else {
+                    add_state_members(statements, it, it_index);
                 }
             }
-            builder: String_Builder;
-            print_block_members(*builder, header.body_or_null.block);
-            state_struct := builder_to_string(*builder);
-            log(state_struct);
-            return state_struct;
+        case .IF;
+            if_block := node.(*Code_If);
+            if if_block.then_block != null {
+                add_nest(tprint("then_%", index), statements, if_block.then_block);
+            }
+            if if_block.else_block != null {
+                add_nest(tprint("else_%", index), statements, if_block.else_block);
+            }
+        case .WHILE;
+            add_nest(tprint("while_%", index), statements, node.(*Code_While).block);
+        case .FOR;
+            for_stmnt := node.(*Code_For);
+
+            for_statements: [..]*Code_Node;
+            if for_stmnt.macro_expansion_procedure_call {
+                add_state_members(*for_statements, for_stmnt.macro_expansion_procedure_call.macro_expansion_block);
+            } else {
+                // This works for range and arrays, but not for_expansions which have void types
+                if for_stmnt.ident_decl array_add(*for_statements, type_only_decl(for_stmnt.ident_decl));
+                if for_stmnt.index_decl array_add(*for_statements, type_only_decl(for_stmnt.index_decl));
+
+                add_nest("while_1", *for_statements, for_stmnt.block); // TODO remember what the 1 was for
+            }
+
+            root := compiler_get_nodes(#code nest_name: struct {}).(*Code_Declaration);
+            root.name = tprint("for_%", index);
+            root.type_inst.type_valued_expression.(*Code_Struct).block.statements = for_statements;
+            array_add(statements, root);
+        case .PROCEDURE_CALL;
+            call := node.(*Code_Procedure_Call);
+            if call.macro_expansion_block == null then return;
+            if call.procedure_expression.kind == .IDENT
+                && "yield" == call.procedure_expression.(*Code_Ident).name then return;
+
+            expand_statements: [..]*Code_Node;
+            // The arguments of the expansion need to be captured in the state
+            // TODO using arguments causes the members to be inserted as .IS_IMPORTED
+            // Since we need the same value to be accessible both ways we should instead have them only the using in the state, not the members.
+            assert(call.resolved_procedure_expression.kind == .PROCEDURE_HEADER);
+            header := call.resolved_procedure_expression.(*Code_Procedure_Header);
+            for header.arguments array_add(*expand_statements, type_only_decl(it));
+
+            add_state_members(*expand_statements, call.macro_expansion_block);
+
+            root := compiler_get_nodes(#code nest_name: struct {}).(*Code_Declaration);
+            root.name = tprint("expand_%", index);
+            root.type_inst.type_valued_expression.(*Code_Struct).block.statements = expand_statements;
+            array_add(statements, root);
+        case .DIRECTIVE_INSERT;
+            insert_code := node.(*Code_Directive_Insert);
+            // When generating the code we need to insert the code as it may contain a yield or return.
+            // This is specifically important when the the yield is for the body of a for_expansion.
+            // - When the scope is `internal` we should not make a new scope
+            // - If the insert is in a redirected scope, I have no idea what to do
+            // - Break, continue, and remove should not be allowed to yield for now.
+            // - expression?
+            if !(insert_code.is_internal || insert_code.scope_redirection || insert_code.break_replacement || insert_code.continue_replacement || insert_code.remove_replacement) {
+
+                if insert_code.expansion.kind == .BLOCK {
+                    add_nest(tprint("block_%", index +1), statements, insert_code.expansion, index); // +1 is a hack as for will insert a defer causing this to move down 1
+                } else {
+                    add_state_members(statements, insert_code.expansion, index);
+                }
+            }
         }
     }
+    Co_state :: #insert #run,stallable -> Code {
+        root, nodes := compiler_get_nodes(code); assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
+        header := root.(*Code_Procedure_Header); assert(header.body_or_null != null);
+
+        struct_root := compiler_get_nodes(#code struct {}).(*Code_Struct);
+
+        statements: [..]*Code_Node;
+        add_state_members(*statements, header.body_or_null.block);
+        struct_root.block.statements = statements;
+
+        log("State:\n%", struct_root.kind);
+        logx(struct_root);
+        log("");
+
+        return compiler_get_code(struct_root);
+    };
     return Co_state;
 }
 
