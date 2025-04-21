@@ -320,7 +320,11 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 }
             }
         case .DECLARATION;
-            assigment := convert_declaration_to_assignment(stmnt.(*Code_Declaration));
+            decl := stmnt.(*Code_Declaration);
+            // Constants are kept in the state so we should remove them from the code
+            if decl.flags & .IS_CONSTANT then continue;
+
+            assigment := convert_declaration_to_assignment(decl);
             if assigment then array_add(*statements, assigment);
             continue; // TODO compound declarations
         case .BLOCK;
@@ -743,7 +747,8 @@ extract_arguments :: ($code: Code) -> Type #compile_time {
 extract_state :: ($code: Code) -> Type #compile_time {
     type_only_decl :: (decl: *Code_Declaration) -> *Code_Node {
         if decl.flags & .IS_CONSTANT {
-            // root := compiler_get_nodes(#code name :: 6).(*Code_Declaration);
+            // Constants need to be in the state as well as they need to be accessible from every yield block
+            // Constant can still be expression so they can use the original declaration.
             return decl;
         }
         if decl.type_inst {
@@ -776,7 +781,6 @@ extract_state :: ($code: Code) -> Type #compile_time {
             for block.members {
                 assert(it.kind == .DECLARATION);
                 member := it.(*Code_Declaration);
-                if member.flags & .IS_CONSTANT then continue; // TODO need to be in there too, might be better to use code instead of string
                 // Backticked declarations from expansions should only be added at the call site's block where it is imported
                 if member.flags & .HAS_SCOPE_MODIFIER && !(member.flags & (.IS_IMPORTED | .IS_ITERATOR)) then continue;
 
