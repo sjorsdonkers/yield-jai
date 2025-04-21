@@ -101,3 +101,6 @@ Code_Make_Varargs
 Code_Loop_Control
 Code_Type_Definition
 Code_Placeholder
+
+# Remove state for code blocks that do not contain yield/return at any level
+# Propagate is_expansion for unbackticked return in nested block

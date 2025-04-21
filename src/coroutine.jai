@@ -272,6 +272,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             return_new_block(.NEW_CASE, unreachable_case_id);
         case .PROCEDURE_CALL;
             call := stmnt.(*Code_Procedure_Call);
+            // Replace yield(..) calls
             if call.procedure_expression.kind == .IDENT
             && "yield" == call.procedure_expression.(*Code_Ident).name {
                 resume_case_id := take_case_id(next_available_case_id);
@@ -281,6 +282,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 return_new_block(.NEW_CASE, resume_case_id);
             }
 
+            // Expand macro expansions if they contain yield/return statements
             if call.macro_expansion_block != null {
                 assert(self.current_sub_block == null);
                 scope_name := tprint("expand_%", self.statement_index);
@@ -301,17 +303,19 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                     array_add(*statements, arg_assignment);
                 }
 
-                // Remove all backticks from identifiers (not from declarations, defer, return, push_context)
-                remove_backticks_from_idents(self.current_sub_block.original);
+                // Remove all backticks from identifiers (not declarations defer, return, push_context)
+                remove_backticks_from_idents(self.current_sub_block.original); // @speed can we do this after processing the block?
 
                 self.current_sub_block.is_expansion = true;
                 block, exit, case_id := process_block(self.current_sub_block, next_available_case_id);
                 assert(case_id == -1);
                 array_add(*statements, block);
                 if exit == .END {
+                    // No yield or return inside the expansion we cannot add the normal block as we need to process backticked
                     self.current_sub_block = null;
                     continue;
                 } else {
+                    // The expansion yielded so we need to add the part we parsed and proceed with the remaining statements
                     return_new_block(exit, self.current_sub_block.set_me_to_case_id);
                 }
             }
@@ -326,9 +330,11 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             assert(case_id == -1);
             array_add(*statements, block);
             if exit == .END {
+                // No yield or return in the block, we still use the processed one as it may have backticked declarations
                 self.current_sub_block = null;
                 continue;
             } else {
+                // The block yielded so we need to add the part we parsed and proceed with the remaining statements
                 return_new_block(exit, self.current_sub_block.set_me_to_case_id);
             }
         case .DEFER;
@@ -338,25 +344,20 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
         case .IF;
             if_block := stmnt.(*Code_If);
 
-            // case 0;
-            //     code before if
-            //     if condition {
-            //         then code until goto 1
-            //     } else {
-            //         else code until goto 3
-            //     }
-            //     yield 4;
-            // case 1;        {
-            //     code in then after 1st yield
-            //     yield 2;
-            // case 2;        {
-            //     code in then after 2nd yield till end
-            //     yield 4
-            // case 3;
-            //     code in else after yield till end
-            //     yield 4
-            // case 4;
-            //     code after if
+            // case 0;     code before if
+            //             if condition {
+            //                 then code until goto 1
+            //             } else {
+            //                 else code until goto 3
+            //             }
+            //             yield 4;
+            // case 1;     code in then after 1st yield
+            //             yield 2;
+            // case 2;     code in then after 2nd yield till end
+            //             yield 4
+            // case 3;     code in else after yield till end
+            //             yield 4
+            // case 4;     code after if
 
             // Do then block
             then_exit := Block_Exit.END;
@@ -387,13 +388,13 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
 
             // We create a case ID (4) such that both branching blocks can jump to the same position
             after_if_case_id := take_case_id(next_available_case_id);
-            array_add(*statements, set_position_node(after_if_case_id)); // TODO sometimes unreachable if ALL branches yield
+            array_add(*statements, set_position_node(after_if_case_id));
             if self.current_sub_block then self.current_sub_block.after_goto_case_id = after_if_case_id;
             if self.waiting_sub_block then self.waiting_sub_block.after_goto_case_id = after_if_case_id;
 
             return_new_block(.NEW_CASE, after_if_case_id);
         case .WHILE;
-            while_block := stmnt.(*Code_While);
+            while_stmnt := stmnt.(*Code_While);
 
             // case 0;
             //      code before while
@@ -413,12 +414,13 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             //      code after while
 
             assert(self.current_sub_block == null && self.waiting_sub_block == null);
-            self.waiting_sub_block = new_sub_block(while_block.block, tprint("while_%", self.statement_index));
+            self.waiting_sub_block = new_sub_block(while_stmnt.block, tprint("while_%", self.statement_index));
             body_block, while_exit, while_case_id := process_block(self.waiting_sub_block, next_available_case_id);
             assert(while_case_id == -1);
 
             if while_exit == .END {
-                array_add(*statements, while_block);
+                while_stmnt.block = body_block; // Needed as declaration may have been backticked
+                array_add(*statements, while_stmnt);
                 self.waiting_sub_block = null;
                 continue;
             }
@@ -438,7 +440,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             {
                 if_node           := New(Code_If);
                 if_node.kind       = .IF;
-                if_node.condition  = while_block.condition;
+                if_node.condition  = while_stmnt.condition;
                 if_node.then_block = body_block;
 
                 while_statements: [..]*Code_Node;
@@ -461,45 +463,56 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             for_stmnt := stmnt.(*Code_For);
             assert(self.current_sub_block == null);
 
-            // explain_for(for_stmnt);
+            // There are 3 types of for loops: range based (for 0..5), array based (for array) and for_expansions.
 
+            // for_expansion
             if for_stmnt.macro_expansion_procedure_call {
                 call := for_stmnt.macro_expansion_procedure_call;
                 // for_expansion are very different from range or array for loops.
-                // for expansions are somewhat like normal expansion calls with a couple of differences the looping happens somewhere later inside the expansion.
-                // Some of the differences are: a for _expansion has the argument assignment statements already put inside the body, so we do not need to do that here.
+                // for expansions are somewhat like normal expansion calls with a couple of differences. The looping (if any) happens somewhere later inside the expansion.
+                // Some of the differences are: a for_expansion has the argument assignment statements already put inside the body, so we do not need to do that here.
                 // However to avoid a copy the iterable is "extracted" during desugaring. Extract code may not exist so we need to replace it.
                 // The other main issue is that we don't seem to get any help renaming the variables
                 self.current_sub_block = new_sub_block(call.macro_expansion_block, tprint("for_%", self.statement_index));
                 remove_backticks_from_idents(self.current_sub_block.original);
 
+                // The first 3 statements in the block are magically the arguments to the for_expansion,
+                // we know that these are always: (Iterable, Body, Flags)
+                // Iterable is put there as a Code_Extract node, which we may not use, so we need to replace the right hand side of the assignment.
+                // Code_Extract is likely used to avoid unnecessary copies of the iterable.
                 iterable := compiler_get_nodes(#code (iter).*).(*Code_Unary_Operator); // A copy since we cannot extract
                 iterable.subexpression = call.arguments_sorted[0];
                 iterable.subexpression.node_flags |= .IS_PARENTHESIZED;
                 self.current_sub_block.original.statements[0].(*Code_Declaration).expression = iterable;
 
+                // The block is parsed just like a normal expansion, there is on last difference relating to renaming of it / it_index.
+                // When the loop body code is insert we need to make sure it and it_index are assigned inside the loop body to variables of the expected names.
+                // Like `value := it;`. We could solve that by 1. assigning them in a block previous to de the body code, 2. In a block that is the parent of the body code, or 3. In the body code itself.
+                // TODO renaming
+                // TODO change if non it/it_index backticked variables are imported as like in normal expansion
                 self.current_sub_block.is_expansion = true;
                 block, exit, case_id := process_block(self.current_sub_block, next_available_case_id);
                 assert(case_id == -1);
                 array_add(*statements, block);
                 if exit == .END {
+                    // No yield or return in the loop
                     self.current_sub_block = null;
                     continue;
                 } else {
+                    // The loop yielded so we added the part we parsed and proceed with the remaining statements
                     return_new_block(exit, self.current_sub_block.set_me_to_case_id);
                 }
             }
 
 
             // We currently just do a hacky solutions for ranges and arrays that reuse the while implementation
-            // After macro expansion has been implemented we will revisit this and make a proper implementation
             // Currently it will create 2 extra cases and an extra nested block due to the hacky implementation
 
             // local = 0;
             // {
             //     it := 0; // TODO need to be careful that often it is just a copy instead of the actual iteration variable
             //     while it <= 1{
-            //         defer it += 1; <-----------------
+            //         defer it += 1; <----------------- This is an issue since it changes the index of all statements
             //         yield(local);
             //         local += 1;
             //     }
@@ -531,8 +544,6 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             for_block  := New(Code_Block);
             for_block.* = self.original.*;
             for_block.statements = for_statements;
-            log("Prepared for block"); // TODO remove
-            logx(for_block);
 
             for_start_case_id := take_case_id(next_available_case_id);
             after_for_case_id := take_case_id(next_available_case_id);
@@ -546,10 +557,15 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             return_new_block(.NEW_CASE, after_for_case_id);
         case .DIRECTIVE_INSERT;
             insert_code := stmnt.(*Code_Directive_Insert);
-            // TODO scope, break, continue, remove, (internal?)
-            self.original.statements[self.statement_index] = insert_code.expansion;
-            self.statement_index -= 1; // as it is going to be defer incremented
-            continue;
+            // We should insert the code if it contains a yield statement
+            // TODO scope, break, continue, remove, internal
+            if !(insert_code.is_internal || insert_code.scope_redirection || insert_code.break_replacement || insert_code.continue_replacement || insert_code.remove_replacement) {
+                // We just replace the insert statement and re-evaluate the statement
+                self.original.statements[self.statement_index] = insert_code.expansion;
+                self.statement_index -= 1; // Needed as it is going to be defer incremented
+                continue;
+            }
+
         }
 
         array_add(*statements, stmnt);
@@ -558,14 +574,14 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
     return_new_block(.END);
 }
 
-// Remove all backticks from identifiers (not from declarations, defer, return, push_context)
+// Remove all backticks from identifiers (not declarations, defer, return, push_context)
+// We do not do declarations as they NEED to be transformed to assignments in which case they also loose the backtick
+// If a backticked declaration remains that is a bug
 remove_backticks_from_idents :: (node: *Code_Node) {
     pointers: [..] *Code_Node;
     get_recursive_nodes_breadth_first(node, *pointers);
     for pointers {
-        if it.kind == .IDENT {
-            it.(*Code_Ident).flags &= ~.HAS_SCOPE_MODIFIER;
-        }
+        if it.kind == .IDENT then it.(*Code_Ident).flags &= ~.HAS_SCOPE_MODIFIER;
     }
 }
 
@@ -761,9 +777,9 @@ extract_state :: ($code: Code) -> Type #compile_time {
                         print_to_builder(builder, "};\n");
                     }
                 case .WHILE;
-                    while_block := node.(*Code_While);
+                    while_stmnt := node.(*Code_While);
                     print_to_builder(builder, "while_%: struct {\n", index);
-                    print_block_members(builder, while_block.block);
+                    print_block_members(builder, while_stmnt.block);
                     print_to_builder(builder, "};\n");
                 case .FOR;
                     for_stmnt := node.(*Code_For);
@@ -772,7 +788,7 @@ extract_state :: ($code: Code) -> Type #compile_time {
                     if for_stmnt.macro_expansion_procedure_call {
                         print_block_members(builder, for_stmnt.macro_expansion_procedure_call.macro_expansion_block);
                     } else {
-                        // This works for range and arrays, but not for_expansions
+                        // This works for range and arrays, but not for_expansions which have void types
                         print_to_builder(builder, "%: %;\n",     for_stmnt.ident_decl.name, get_type(for_stmnt.ident_decl.entry.type));
                         if for_stmnt.index_decl {
                             print_to_builder(builder, "%: %;\n", for_stmnt.index_decl.name, get_type(for_stmnt.index_decl.type));
@@ -806,9 +822,16 @@ extract_state :: ($code: Code) -> Type #compile_time {
                     print_to_builder(builder, "};\n");
                 case .DIRECTIVE_INSERT;
                     insert_code := node.(*Code_Directive_Insert);
-                    if insert_code.expansion.kind == .BLOCK print_to_builder(builder, "block_%: struct {\n", index + 1); // +1 is a hack as for will insert a defer causing this to move down 1
-                    print_block_members(builder, insert_code.expansion, index);
-                    if insert_code.expansion.kind == .BLOCK print_to_builder(builder, "};\n");
+                    // When generating the code we need to insert the code as it may contain a yield or return.
+                    // This is specifically important when the the yield is for the body of a for_expansion.
+                    // - When the scope is `internal` we should not make a new scope
+                    // - If the insert is in a redirected scope, I have no idea what to do
+                    // - Break, continue, and remove should not be allowed to yield for now.
+                    if !(insert_code.is_internal || insert_code.scope_redirection || insert_code.break_replacement || insert_code.continue_replacement || insert_code.remove_replacement) {
+                        if insert_code.expansion.kind == .BLOCK print_to_builder(builder, "block_%: struct {\n", index + 1); // +1 is a hack as for will insert a defer causing this to move down 1
+                        print_block_members(builder, insert_code.expansion, index);
+                        if insert_code.expansion.kind == .BLOCK print_to_builder(builder, "};\n");
+                    }
                 }
             }
             builder: String_Builder;
