@@ -73,22 +73,23 @@ rename_it :: () {
 }
 
 expanding_for :: () {
-    // The plan for renaming
-    // Cleanup first, specifically defer +1 hack
-    // Assign myt := it in inserted code block as priority statements
-
     fors :: () -> s64 {
         local: Holder;
         array_add(*local.values, 6, 8);
-        for local {
-            yield(it);
+        for myt, my_idx: local {
+            yield(my_idx);
+            yield(myt);
         }
         return 9;
     }
 
     yielding := init(#run,stallable into_yielding(fors));
     status, result := next(*yielding);
+    assert(status == .YIELD && result == 0, "expanding_for: %\n", result);
+    status, result  = next(*yielding);
     assert(status == .YIELD && result == 6, "expanding_for: %\n", result);
+    status, result  = next(*yielding);
+    assert(status == .YIELD && result == 1, "expanding_for: %\n", result);
     status, result  = next(*yielding);
     assert(status == .YIELD && result == 8, "expanding_for: %\n", result);
     status, result  = next(*yielding);

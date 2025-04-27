@@ -215,14 +215,15 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             assert(sub_case_id != -1);
 
             if !has_more(self.current_sub_block) {
-                // Is this when we yield/return as the last statement in a sub block?
-                // assert(self.current_sub_block.set_me_to_case_id == -1, "% - %", self.current_sub_block.set_me_to_case_id, sub_case_id); // ??
+                if self.current_sub_block.set_me_to_case_id != -1 {
+                    // If a sub block yielded at the end we adopt their case id (is sub_exit == .NEW_CASE needed?)
+                    self.set_me_to_case_id = self.current_sub_block.set_me_to_case_id;
+                }
                 self.current_sub_block = null;
             }
             if sub_exit == .END {
                 // We dropped of the end of a nested block, so we take over the case id
                 // However, we we may have started the sub block ourselves in which case it's ID are the same
-                // assert(self.set_me_to_case_id == -1 || self.set_me_to_case_id == sub_case_id, "%-%", self.set_me_to_case_id, sub_case_id);
                 self.set_me_to_case_id = sub_case_id;
                 continue;
             } else {
@@ -248,7 +249,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             if self.after_goto_case_id != -1 {
                 array_add(*statements, set_position_node(self.after_goto_case_id));
                 self.after_goto_case_id = -1;
-                return_new_block(.NEW_CASE); // If we have a after goto we need to end the case as this the end of for example an if or loop block
+                return_new_block(.NEW_CASE); // If we have a after goto we need to end the case as this is the end of for example an if or loop block
             }
             break;
         }
@@ -356,13 +357,13 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             //             } else {
             //                 else code until goto 3
             //             }
-            //             yield 4;
+            //             goto 4;
             // case 1;     code in then after 1st yield
-            //             yield 2;
+            //             goto 2;
             // case 2;     code in then after 2nd yield till end
-            //             yield 4
+            //             goto 4
             // case 3;     code in else after yield till end
-            //             yield 4
+            //             goto 4
             // case 4;     code after if
 
             // Do then block
@@ -402,22 +403,17 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
         case .WHILE;
             while_stmnt := stmnt.(*Code_While);
 
-            // case 0;
-            //      code before while
-            //      goto 1
-            // case 1;
-            //      if while condition {
-            //          code until goto 2
-            //      }
-            //      goto 4
-            // case 2;
-            //      code in while after 1st yield
-            //      goto 3 // Goto to next pos in the same block
-            // case 3;
-            //      code in while after 2nd yield until end of while block
-            //      goto 1 // Goto loop start if we reached the end of the loop block
-            // case 4;
-            //      code after while
+            // case 0;     code before while
+            //             goto 1
+            // case 1;     if while condition {
+            //                 code until goto 2
+            //             }
+            //             goto 4
+            // case 2;     code in while after 1st yield
+            //             goto 3 // Goto to next pos in the same block
+            // case 3;     code in while after 2nd yield until end of while block
+            //             goto 1 // Goto loop start if we reached the end of the loop block
+            // case 4;     code after while
 
             assert(self.current_sub_block == null && self.waiting_sub_block == null);
             self.waiting_sub_block = new_sub_block(while_stmnt.block, tprint("while_%", self.statement_index), self.iterator_rename);
@@ -493,11 +489,11 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
 
                 // The block is parsed just like a normal expansion, there is on last difference relating to renaming of it / it_index.
                 // When the loop body code is insert we need to make sure it and it_index are assigned inside the loop body to variables of the expected names.
-                // Like `value := it;`. We could solve that by 1. assigning them in a block previous to de the body code, 2. In a block that is the parent of the body code, or 3. In the body code itself.
+                // Like `renamed_it := it;`. This is done by wrapping the inserted body code, just before it is inserted. Here we store the information needed to do that.
                 self.current_sub_block.iterator_rename = .{
-                    body_code_ident = for_stmnt.macro_expansion_procedure_call.macro_expansion_block.statements[1].(*Code_Declaration).name,
-                    it = for_stmnt.ident_it,
-                    it_index = for_stmnt.ident_it_index,
+                    body_name     = for_stmnt.macro_expansion_procedure_call.macro_expansion_block.statements[1].(*Code_Declaration).name,
+                    it_name       = for_stmnt.ident_it.name,
+                    it_index_name = for_stmnt.ident_it_index.name,
                 };
 
                 // TODO change if non it/it_index backticked variables are imported as like in normal expansion
@@ -542,7 +538,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             block_statements_with_defer: [..]*Code_Node;
             defer_increment_node := compiler_get_nodes(#code defer it += 1;).(*Code_Defer);
             defer_increment_node.block.statements[0].(*Code_Binary_Operator).left = for_stmnt.ident_it;
-            array_add(*block_statements_with_defer, defer_increment_node);
+            array_add(*block_statements_with_defer, defer_increment_node); // TODO add this as defered_statement after cleanup
             array_add(*block_statements_with_defer, ..for_stmnt.block.statements);
             while_stmnt.block.statements = block_statements_with_defer;
 
@@ -570,37 +566,42 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             insert_code := stmnt.(*Code_Directive_Insert);
             // We should insert the code if it contains a yield statement
             // TODO scope, break, continue, remove, internal, expression
-            if !(insert_code.is_internal || insert_code.scope_redirection || insert_code.break_replacement || insert_code.continue_replacement || insert_code.remove_replacement) {
+            if insert_code.is_internal || insert_code.scope_redirection || insert_code.break_replacement || insert_code.continue_replacement || insert_code.remove_replacement {
+            }
+            expansion := insert_code.expansion;
 
-                expansion := insert_code.expansion.(*Code_Block);
-
-                // We may be inserting the code of the loop body and may have to insert the renaming of it/it_index
-                if insert_code.expression.kind == .IDENT
-                        && self.iterator_rename.body_code_ident == insert_code.expression.(*Code_Ident).name {
-                    defer self.iterator_rename = .{}; // TODO For now code can only be inserted once, should instead only be removed in the expansion block
-
-                    expansion = compiler_get_nodes(#code {
-                        new_it := it;
-                        new_it_index := it_index;
-                        insert_code;
-                    }).(*Code_Block);
-                    expansion.statements[0].(*Code_Declaration).name = self.iterator_rename.it.name;
-                    expansion.statements[1].(*Code_Declaration).name = self.iterator_rename.it_index.name;
-                    expansion.statements[2] = insert_code.expansion;
-                }
-
-                // We just replace the insert statement and re-evaluate the statement
-                self.original.statements[self.statement_index] = expansion;
-                self.statement_index -= 1; // Needed as it is going to be defer incremented
-                continue;
+            // We may be inserting the code of the loop body and may have to insert the renaming of it/it_index
+            if insert_code.expression.kind == .IDENT
+                    && self.iterator_rename.body_name == insert_code.expression.(*Code_Ident).name {
+                expansion = xx wrap_with_renamed_it(self.iterator_rename, expansion);
+                self.iterator_rename = .{}; // TODO For now code can only be inserted once, should instead only be removed in the expansion block
             }
 
+            // We just replace the insert statement and re-evaluate the statement
+            self.original.statements[self.statement_index] = expansion;
+            self.statement_index -= 1; // Needed as it is going to be defer incremented
+            continue;
         }
 
         array_add(*statements, stmnt);
     }
 
     return_new_block(.END);
+}
+
+//   renamed_it    := it;
+//   renamed_index := it_index;
+//   unaltered_body_block;
+wrap_with_renamed_it :: (rename: Iterator_Rename, original: *Code_Node) -> *Code_Block {
+    wrap := compiler_get_nodes(#code {
+        new_it       := it;
+        new_it_index := it_index;
+        insert_code;
+    }).(*Code_Block);
+    wrap.statements[0].(*Code_Declaration).name = rename.it_name;
+    wrap.statements[1].(*Code_Declaration).name = rename.it_index_name;
+    wrap.statements[2] = original;
+    return wrap;
 }
 
 // Remove all backticks from identifiers (not declarations, defer, return, push_context)
@@ -834,12 +835,19 @@ extract_state :: ($code: Code) -> Type #compile_time {
 
             for_statements: [..]*Code_Node;
             if for_stmnt.macro_expansion_procedure_call {
-                iterator_rename.* = .{
-                    body_code_ident = for_stmnt.macro_expansion_procedure_call.macro_expansion_block.statements[1].(*Code_Declaration).name,
-                    it = for_stmnt.ident_it,
-                    it_index = for_stmnt.ident_it_index,
-                };
-                add_state_members(*for_statements, for_stmnt.macro_expansion_procedure_call.macro_expansion_block, iterator_rename);
+                rename := New(Iterator_Rename);
+                // The body code itself will contain renamed identifiers of it/it_index. The iterators however in the expansion code however must be called it/it_index.
+                // We will surround the inserted code with a block containing the assignment of it/it_index to the renamed identifiers.
+                //   renamed_it    := it;
+                //   renamed_index := it_index;
+                //   {
+                //       unaltered_body_code_here;
+                //   }
+                // To be able to know where the body of the loop is inserted we store the name of the variable `body` in case of `body: Code`
+                rename.body_name = for_stmnt.macro_expansion_procedure_call.macro_expansion_block.statements[1].(*Code_Declaration).name;
+                rename.it_name        = for_stmnt.ident_it.name;
+                rename.it_index_name  = for_stmnt.ident_it_index.name; // Not null regardless of whether it is used or not
+                add_state_members(*for_statements, for_stmnt.macro_expansion_procedure_call.macro_expansion_block, rename);
             } else {
                 // This works for range and arrays, but not for_expansions which have void types
                 if for_stmnt.ident_decl array_add(*for_statements, type_only_decl(for_stmnt.ident_decl));
@@ -876,47 +884,39 @@ extract_state :: ($code: Code) -> Type #compile_time {
             insert_code := node.(*Code_Directive_Insert);
             // When generating the code we need to insert the code as it may contain a yield or return.
             // This is specifically important when the the yield is for the body of a for_expansion.
+            // TODO:
             // - When the scope is `internal` we should not make a new scope
             // - If the insert is in a redirected scope, I have no idea what to do
             // - Break, continue, and remove should not be allowed to yield for now.
-            // - expression?
-            if !(insert_code.is_internal || insert_code.scope_redirection || insert_code.break_replacement || insert_code.continue_replacement || insert_code.remove_replacement) {
-                if insert_code.expansion.kind == .BLOCK {
-                    expansion := insert_code.expansion.(*Code_Block);
+            if (insert_code.is_internal || insert_code.scope_redirection || insert_code.break_replacement || insert_code.continue_replacement || insert_code.remove_replacement) {
+                return;
+            }
+            if insert_code.expansion.kind == .BLOCK {
+                // We may be inserting the code of the loop body and may have to insert the renaming of it/it_index
+                if insert_code.expression.kind == .IDENT
+                        && iterator_rename.body_name == insert_code.expression.(*Code_Ident).name {
+                    wrap := wrap_with_renamed_it(iterator_rename, insert_code.expansion);
 
-                    // We may be inserting the code of the loop body and may have to insert the renaming of it/it_index
-                    if insert_code.expression.kind == .IDENT
-                            && iterator_rename.body_code_ident == insert_code.expression.(*Code_Ident).name {
-                        defer iterator_rename.* = .{};
-
-                        expansion = compiler_get_nodes(#code {
-                            new_it := it;
-                            new_it_index := it_index;
-                            insert_code;
-                        }).(*Code_Block);
-                        expansion.statements[0].(*Code_Declaration).name = iterator_rename.it.name;
-                        expansion.statements[1].(*Code_Declaration).name = iterator_rename.it_index.name;
-                        expansion.statements[2] = insert_code.expansion;
-
-                        // The #code block will is not typed yet so it does not have members yet, so we need to add them ourselves
-                        // Additionally, we do not have the the types of it / it_index, but we do know their names
-                        members: [..]*Code_Scope_Entry;
-                        if iterator_rename.it.name != "it" {
-                            it_decl := compiler_get_nodes(#code new_it: type_of(it)).(*Code_Declaration);
-                            it_decl.name = iterator_rename.it.name;
-                            array_add(*members, it_decl);
-                        }
-                        if iterator_rename.it_index.name != "it_index" {
-                            it_index_decl := compiler_get_nodes(#code new_it_index: type_of(it_index)).(*Code_Declaration);
-                            it_index_decl.name = iterator_rename.it_index.name;
-                            array_add(*members, it_index_decl);
-                        }
-                        expansion.members = members;
+                    // The #code block will is not typed yet so it does not have members yet, so we need to add them ourselves
+                    // Additionally, we do not have the the types of it / it_index, but we do know their names
+                    members: [..]*Code_Scope_Entry;
+                    if iterator_rename.it_name != "it" {
+                        it_decl := compiler_get_nodes(#code new_it: type_of(it)).(*Code_Declaration);
+                        it_decl.name = iterator_rename.it_name;
+                        array_add(*members, it_decl);
                     }
-                    add_nest(tprint("block_%", index +1), statements, expansion, iterator_rename, index); // +1 is a hack as for will insert a defer causing this to move down 1
+                    if iterator_rename.it_index_name != "it_index" {
+                        it_index_decl := compiler_get_nodes(#code new_it_index: type_of(it_index)).(*Code_Declaration);
+                        it_index_decl.name = iterator_rename.it_index_name;
+                        array_add(*members, it_index_decl);
+                    }
+                    wrap.members = members;
+                    add_nest(tprint("block_%", index +1), statements, wrap, New(Iterator_Rename), index); // +1 is a hack as for will insert a defer causing this to move down 1
                 } else {
-                    add_state_members(statements, insert_code.expansion, iterator_rename, index);
+                    add_nest(tprint("block_%", index +1), statements, insert_code.expansion, iterator_rename, index); // +1 is a hack as for will insert a defer causing this to move down 1
                 }
+            } else {
+                add_state_members(statements, insert_code.expansion, iterator_rename, index);
             }
         }
     }
@@ -931,19 +931,16 @@ extract_state :: ($code: Code) -> Type #compile_time {
         add_state_members(*statements, header.body_or_null.block, New(Iterator_Rename));
         struct_root.block.statements = statements;
 
-        log("State:\n%", struct_root.kind);
         logx(struct_root);
-        log("");
-
         return compiler_get_code(struct_root);
     };
     return Co_state;
 }
 
 Iterator_Rename :: struct {
-    body_code_ident: string;
-    it: *Code_Ident;
-    it_index: *Code_Ident;
+    body_name    : string;
+    it_name      : string;
+    it_index_name: string;
 }
 
 #scope_file
