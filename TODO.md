@@ -78,7 +78,10 @@
 Code_Defer
   1. yields inside deferred block
 Code_For
-  1. anything other than basic range based for loop
+  1. cleanup, fix defer index, it_index testing
+  1. Do not rename after loop body code has been shadowed
+  1. support multiple inserts of loop body code
+  1. non-it/it_index backticked statements
 - Code_Directive_Insert
   1. scope
   1. break, continue, remove
