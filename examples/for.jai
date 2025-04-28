@@ -3,14 +3,15 @@ main :: () {
     yield_in_for();
     rename_it();
     array_for();
-    expanding_for();
+    plain_expanding_for();
+    yield_in_expanding_for();
 }
 
 plain_for :: () {
     fors :: () -> s64 {
         local:= 0;
         for 0..1 {
-            local += 1;
+            local += it;
         }
         local += 9;
         return local;
@@ -18,7 +19,7 @@ plain_for :: () {
 
     yielding := init(#run,stallable into_yielding(fors));
     status, result := next(*yielding);
-    assert(status == .RETURN && result == 11, "plain for return: %\n", result);
+    assert(status == .RETURN && result == 10, "plain for return: %\n", result);
 }
 
 yield_in_for :: () {
@@ -32,16 +33,6 @@ yield_in_for :: () {
         local += 9;
         return local;
     }
-
-    // local = 0;
-    // {
-    //     it := 0;
-    //     while it <= 1{
-    //         defer it += 1;
-    //         yield(local);
-    //         local += 1;
-    //     }
-    // }
 
     yielding := init(#run,stallable into_yielding(fors));
     status, result := next(*yielding);
@@ -96,7 +87,23 @@ array_for :: () {
     assert(status == .RETURN && result == 9, "rename_it return: %\n", result);
 }
 
-expanding_for :: () {
+plain_expanding_for :: () {
+    fors :: () -> s64 {
+        sum := 0;
+        local: Holder;
+        array_add(*local.values, 6, 8);
+        for myt: local {
+            sum += myt;
+        }
+        return sum;
+    }
+
+    yielding := init(#run,stallable into_yielding(fors));
+    status, result := next(*yielding);
+    assert(status == .RETURN && result == 14, "expanding_for return: %\n", result);
+}
+
+yield_in_expanding_for :: () {
     fors :: () -> s64 {
         local: Holder;
         array_add(*local.values, 6, 8);
@@ -126,7 +133,6 @@ Holder :: struct {
 for_expansion :: (holder: Holder, body: Code, flags: For_Flags) #expand {
     for slot: 0..holder.values.count-1 {
         `it_index := slot;
-        a := 99;
         `it := holder.values[slot];
         #insert body;
     }

@@ -314,7 +314,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 assert(case_id == -1);
                 array_add(*statements, block);
                 if exit == .END {
-                    // No yield or return inside the expansion we cannot add the normal block as we need to process backticked
+                    // No yield or return inside the expansion we cannot add the normal block as we need to process backticked declarations
                     self.current_sub_block = null;
                     continue;
                 } else {
@@ -534,6 +534,24 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             assert(while_case_id == -1);
 
             if while_exit == .END {
+                // We need to replace the body_block, but the for is introducing variables that are overwritten by the using state;
+                // state.renamed_it = renamed_it;
+                fbs : [..]*Code_Node;
+                binop := compiler_get_nodes(#code state.renamed_it = renamed_it).(*Code_Binary_Operator);
+                binop.left.(*Code_Binary_Operator).left.(*Code_Ident).name = scope_name;
+                binop.left.(*Code_Binary_Operator).right                   = for_stmnt.ident_it;
+                binop.right = for_stmnt.ident_it;
+                array_add(*fbs, binop);
+                if for_stmnt.iteration_expression_right == null {
+                    binop := compiler_get_nodes(#code state.renamed_it = renamed_it).(*Code_Binary_Operator);
+                    binop.left.(*Code_Binary_Operator).left.(*Code_Ident).name = scope_name;
+                    binop.left.(*Code_Binary_Operator).right                   = for_stmnt.ident_it_index;
+                    binop.right = for_stmnt.ident_it_index;
+                    array_add(*fbs, binop);
+                }
+                array_add(*fbs, ..body_block.statements);
+                body_block.statements = fbs;
+
                 for_stmnt.block = body_block; // Needed as declaration may have been backticked
                 array_add(*statements, for_stmnt);
                 self.waiting_sub_block = null;
@@ -658,6 +676,9 @@ wrap_with_renamed_it :: (rename: Iterator_Rename, original: *Code_Node) -> *Code
     wrap.statements[0].(*Code_Declaration).name = rename.it_name;
     wrap.statements[1].(*Code_Declaration).name = rename.it_index_name;
     wrap.statements[2] = original;
+    // Don't self-assign if not renamed
+    if rename.it_index_name == "it_index" array_unordered_remove_by_index(*wrap.statements, 1);
+    if rename.it_name       == "it"       array_unordered_remove_by_index(*wrap.statements, 0);
     return wrap;
 }
 

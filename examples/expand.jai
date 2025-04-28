@@ -1,8 +1,31 @@
 main :: () {
+    plain_expand();
     yield_in_expand();
     return_in_expand();
     expand_with_param();
     expand_with_default_param();
+}
+
+plain_expand :: () {
+    expands :: () -> s64 {
+        macy :: () #expand {
+            `guy := 17;
+        }
+        local := 0;
+        {
+            defer local += 1;
+            local += 2;
+            macy();
+            yield(guy);
+        }
+        return local;
+    }
+
+    yielding := init(#run,stallable into_yielding(expands));
+    status, result := next(*yielding);
+    assert(status == .YIELD && result == 17, "yield_in_expand: %\n", result);
+    status, result  = next(*yielding);
+    assert(status == .RETURN && result == 3, "yield_in_expand return: %\n", result);
 }
 
 yield_in_expand :: () {
