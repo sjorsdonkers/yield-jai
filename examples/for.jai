@@ -2,6 +2,7 @@ main :: () {
     plain_for();
     yield_in_for();
     rename_it();
+    array_for();
     expanding_for();
 }
 
@@ -72,6 +73,29 @@ rename_it :: () {
     assert(status == .RETURN && result == 14, "rename_it return: %\n", result);
 }
 
+array_for :: () {
+    fors :: () -> s64 {
+        locals:= u16.[7, 4];
+        for myt, my_idx: locals {
+            yield(my_idx);
+            yield(myt);
+        }
+        return 9;
+    }
+
+    yielding := init(#run,stallable into_yielding(fors));
+    status, result := next(*yielding);
+    assert(status == .YIELD && result == 0, "rename_it: %\n", result);
+    status, result  = next(*yielding);
+    assert(status == .YIELD && result == 7, "rename_it: %\n", result);
+    status, result  = next(*yielding);
+    assert(status == .YIELD && result == 1, "rename_it: %\n", result);
+    status, result  = next(*yielding);
+    assert(status == .YIELD && result == 4, "rename_it: %\n", result);
+    status, result  = next(*yielding);
+    assert(status == .RETURN && result == 9, "rename_it return: %\n", result);
+}
+
 expanding_for :: () {
     fors :: () -> s64 {
         local: Holder;
@@ -97,7 +121,7 @@ expanding_for :: () {
 }
 
 Holder :: struct {
-    values: [..]s64;
+    values: [..]u8;
 }
 for_expansion :: (holder: Holder, body: Code, flags: For_Flags) #expand {
     for slot: 0..holder.values.count-1 {

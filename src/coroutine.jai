@@ -434,9 +434,6 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
             array_add(*statements, set_position_node(loop_start_case_id));
             array_add(*statements, compiler_get_nodes(#code continue)); // We need to continue to prevent the execution of any code of higher blocks
 
-            /// CASE 2 / 3 / ... should eventually always loop back to 1 ///
-            self.waiting_sub_block.after_goto_case_id = loop_start_case_id;
-
             /// CASE 1 ///
             // Set it as the current sub-block
             {
@@ -459,11 +456,16 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 self.current_sub_block.original_is_processed = true;
             }
 
+            /// CASE 2 / 3 / ... should eventually always loop back to 1 ///
+            self.waiting_sub_block.after_goto_case_id = loop_start_case_id;
+
             /// CASE 4 continues from the this Block_Process with after_while_case_id ///
             return_new_block(.NEW_CASE, after_while_case_id);
         case .FOR;
             for_stmnt := stmnt.(*Code_For);
             assert(self.current_sub_block == null);
+            scope_name := tprint("for_%", self.statement_index);
+
 
             // There are 3 types of for loops: range based (for 0..5), array based (for array) and for_expansions.
 
@@ -475,7 +477,7 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 // Some of the differences are: a for_expansion has the argument assignment statements already put inside the body, so we do not need to do that here.
                 // However to avoid a copy the iterable is "extracted" during desugaring. Extract code may not exist so we need to replace it.
                 // The other main issue is that we don't seem to get any help renaming the variables
-                self.current_sub_block = new_sub_block(call.macro_expansion_block, tprint("for_%", self.statement_index), self.iterator_rename);
+                self.current_sub_block = new_sub_block(call.macro_expansion_block, scope_name, self.iterator_rename);
                 remove_backticks_from_idents(self.current_sub_block.original);
 
                 // The first 3 statements in the block are magically the arguments to the for_expansion,
@@ -511,56 +513,111 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
                 }
             }
 
+            // case 0;     code before for
+            //             for_#.renamed_it[_index] = iteration_expression OR 0;
+            //             goto 1
+            // case 1;     if for_#.renamed_it <= iteration_expression_right OR for_#.renamed_it_index < iteration_expression.count {
+            //                 [renamed_it = iteration_expression[renamed_it_index];]
+            //                 code until goto 2
+            //             }
+            //             goto 4
+            // case 2;     code in while after 1st yield
+            //             goto 3 // Goto to next pos in the same block
+            // case 3;     code in while after 2nd yield until end of while block
+            //             defer renamed_it[_index] += 1;
+            //             goto 1 // Goto loop start if we reached the end of the loop block
+            // case 4;     code after for
 
-            // We currently just do a hacky solutions for ranges and arrays that reuse the while implementation
-            // Currently it will create 2 extra cases and an extra nested block due to the hacky implementation
+            assert(self.current_sub_block == null && self.waiting_sub_block == null);
+            self.waiting_sub_block = new_sub_block(for_stmnt.block, scope_name, self.iterator_rename);
+            body_block, while_exit, while_case_id := process_block(self.waiting_sub_block, next_available_case_id);
+            assert(while_case_id == -1);
 
-            // local = 0;
-            // {
-            //     it := 0; // TODO need to be careful that often it is just a copy instead of the actual iteration variable
-            //     while it <= 1{
-            //         defer it += 1; <----------------- This is an issue since it changes the index of all statements
-            //         yield(local);
-            //         local += 1;
-            //     }
-            // }
+            if while_exit == .END {
+                for_stmnt.block = body_block; // Needed as declaration may have been backticked
+                array_add(*statements, for_stmnt);
+                self.waiting_sub_block = null;
+                continue;
+            }
+            /// CASE 0 ///
+            // If the for block contains any yield or return we turn it into an if statement
+            // Before doing so we need to end the current case as we do not want to re-execute that code
+            // And we need to set the initial values of it/it_index
+            if for_stmnt.iteration_expression_right != null {
+                // We have a range based for loop
+                binop := compiler_get_nodes(#code state.renamed_it = iteration_expression).(*Code_Binary_Operator);
+                binop.left.(*Code_Binary_Operator).left.(*Code_Ident).name = scope_name;
+                binop.left.(*Code_Binary_Operator).right                   = for_stmnt.ident_it;
+                binop.right = for_stmnt.iteration_expression;
+                array_add(*statements, binop);
+            } else {
+                // We have an array based for loop
+                index_binop := compiler_get_nodes(#code state.renamed_it_index = 0).(*Code_Binary_Operator);
+                index_binop.left.(*Code_Binary_Operator).left.(*Code_Ident).name = scope_name;
+                index_binop.left.(*Code_Binary_Operator).right                   = for_stmnt.ident_it_index;
+                array_add(*statements, index_binop);
+            }
+            // loop_initializer.statements = init_statements;
+            loop_start_case_id := take_case_id(next_available_case_id);
+            after_for_case_id  := take_case_id(next_available_case_id);
+            array_add(*statements, set_position_node(loop_start_case_id));
+            array_add(*statements, compiler_get_nodes(#code continue)); // We need to continue to prevent the execution of any code of higher blocks
 
-            for_statements: [..]*Code_Node;
-            it_decl := compiler_get_nodes(#code it := 0).(*Code_Declaration);
-            it_decl.name = for_stmnt.ident_it.name;
-            it_decl.expression = for_stmnt.iteration_expression;
-            array_add(*for_statements, it_decl); // TODO it_index
+            /// CASE 1 ///
+            {
+                // Prepare the condition for the if statement of the loop
+                for_condition: *Code_Binary_Operator;
+                if for_stmnt.iteration_expression_right != null {
+                    for_condition = compiler_get_nodes(#code state.it <= 1).(*Code_Binary_Operator);
+                    for_condition.left.(*Code_Binary_Operator).left.(*Code_Ident).name = scope_name;
+                    for_condition.left.(*Code_Binary_Operator).right                   = for_stmnt.ident_it;
+                    for_condition.right = for_stmnt.iteration_expression_right;
+                } else {
+                    for_condition = compiler_get_nodes(#code state.renamed_it_index < iteration_expression.count).(*Code_Binary_Operator);
+                    for_condition.left.(*Code_Binary_Operator).left.(*Code_Ident).name = scope_name;
+                    for_condition.left.(*Code_Binary_Operator).right                   = for_stmnt.ident_it_index;
+                    for_condition.right.(*Code_Binary_Operator).left = for_stmnt.iteration_expression;
 
-            while_stmnt := New(Code_While);
-            while_stmnt.kind = .WHILE;
+                    // Add it assignment to the start of the loop body, this is OK since the block is already processed
+                    replace_statements: [..]*Code_Node;
+                    array_add(*replace_statements, body_block.statements[0]); // The using state; statement 1st
+                    it_binop := compiler_get_nodes(#code renamed_it = iteration_expression[renamed_it_index]).(*Code_Binary_Operator);
+                    it_binop.left = for_stmnt.ident_it;
+                    it_binop.right.(*Code_Binary_Operator).left  = for_stmnt.iteration_expression;
+                    it_binop.right.(*Code_Binary_Operator).right = for_stmnt.ident_it_index;
+                    array_add(*replace_statements, it_binop);
+                    for 1..body_block.statements.count-1 array_add(*replace_statements, body_block.statements[it]);
+                    body_block.statements = replace_statements;
+                }
 
-            while_stmnt.block = for_stmnt.block;
-            block_statements_with_defer: [..]*Code_Node;
-            defer_increment_node := compiler_get_nodes(#code defer it += 1;).(*Code_Defer);
-            defer_increment_node.block.statements[0].(*Code_Binary_Operator).left = for_stmnt.ident_it;
-            array_add(*block_statements_with_defer, defer_increment_node); // TODO add this as defered_statement after cleanup
-            array_add(*block_statements_with_defer, ..for_stmnt.block.statements);
-            while_stmnt.block.statements = block_statements_with_defer;
+                if_node           := New(Code_If);
+                if_node.kind       = .IF;
+                if_node.then_block = body_block;
+                if_node.condition  = xx for_condition;
 
-            while_condition := compiler_get_nodes(#code it <= 1).(*Code_Binary_Operator);
-            while_condition.left = for_stmnt.ident_it;
-            while_condition.right = for_stmnt.iteration_expression_right;
-            while_stmnt.condition = while_condition;
-            array_add(*for_statements, while_stmnt);
+                for_statements: [..]*Code_Node;
+                array_add(*for_statements, if_node);
+                array_add(*for_statements, set_position_node(after_for_case_id));
+                // We end this case here as we do not want to execute code after the while loop until the loop has completed
 
-            for_block  := New(Code_Block);
-            for_block.* = self.original.*;
-            for_block.statements = for_statements;
+                temp_block           := New(Code_Block);
+                temp_block.*          = self.original.*;
+                temp_block.statements = for_statements;
 
-            for_start_case_id := take_case_id(next_available_case_id);
-            after_for_case_id := take_case_id(next_available_case_id);
-            self.current_sub_block = new_sub_block(for_block, tprint("for_%", self.statement_index), self.iterator_rename);
-            self.current_sub_block.set_me_to_case_id  = for_start_case_id;
-            self.current_sub_block.after_goto_case_id = after_for_case_id;
+                self.current_sub_block                       = new_sub_block(temp_block, "", self.iterator_rename);
+                self.current_sub_block.set_me_to_case_id     = loop_start_case_id;
+                self.current_sub_block.original_is_processed = true;
+            }
 
-            array_add(*statements, set_position_node(for_start_case_id));
-            array_add(*statements, compiler_get_nodes(#code continue));
+            // /// CASE 2 / 3 / ... should eventually always loop back to 1 ///
+            self.waiting_sub_block.after_goto_case_id = loop_start_case_id;
 
+            // Defer increment loop condition
+            defer_increment_node := compiler_get_nodes(#code defer renamed_it_it_index += 1;).(*Code_Defer);
+            defer_increment_node.block.statements[0].(*Code_Binary_Operator).left = ifx for_stmnt.iteration_expression_right then for_stmnt.ident_it else for_stmnt.ident_it_index;
+            array_add(*self.waiting_sub_block.deferred_statements, defer_increment_node);
+
+            /// CASE 4 continues from the this Block_Process with after_for_case_id ///
             return_new_block(.NEW_CASE, after_for_case_id);
         case .DIRECTIVE_INSERT;
             insert_code := stmnt.(*Code_Directive_Insert);
@@ -833,7 +890,6 @@ extract_state :: ($code: Code) -> Type #compile_time {
         case .FOR;
             for_stmnt := node.(*Code_For);
 
-            for_statements: [..]*Code_Node;
             if for_stmnt.macro_expansion_procedure_call {
                 rename := New(Iterator_Rename);
                 // The body code itself will contain renamed identifiers of it/it_index. The iterators however in the expansion code however must be called it/it_index.
@@ -847,19 +903,19 @@ extract_state :: ($code: Code) -> Type #compile_time {
                 rename.body_name = for_stmnt.macro_expansion_procedure_call.macro_expansion_block.statements[1].(*Code_Declaration).name;
                 rename.it_name        = for_stmnt.ident_it.name;
                 rename.it_index_name  = for_stmnt.ident_it_index.name; // Not null regardless of whether it is used or not
-                add_state_members(*for_statements, for_stmnt.macro_expansion_procedure_call.macro_expansion_block, rename);
+                add_nest(tprint("for_%", index), statements, for_stmnt.macro_expansion_procedure_call.macro_expansion_block, rename);
             } else {
-                // This works for range and arrays, but not for_expansions which have void types
+                // ident_decl works for range and arrays, but not for_expansions which have void types
+                for_statements: [..]*Code_Node;
                 if for_stmnt.ident_decl array_add(*for_statements, type_only_decl(for_stmnt.ident_decl));
                 if for_stmnt.index_decl array_add(*for_statements, type_only_decl(for_stmnt.index_decl));
+                add_state_members(*for_statements, for_stmnt.block, iterator_rename);
 
-                add_nest("while_1", *for_statements, for_stmnt.block, iterator_rename); // TODO remember what the 1 was for
+                root := compiler_get_nodes(#code nest_name: struct {}).(*Code_Declaration);
+                root.name = tprint("for_%", index);
+                root.type_inst.type_valued_expression.(*Code_Struct).block.statements = for_statements;
+                array_add(statements, root);
             }
-
-            root := compiler_get_nodes(#code nest_name: struct {}).(*Code_Declaration);
-            root.name = tprint("for_%", index);
-            root.type_inst.type_valued_expression.(*Code_Struct).block.statements = for_statements;
-            array_add(statements, root);
         case .PROCEDURE_CALL;
             call := node.(*Code_Procedure_Call);
             if call.macro_expansion_block == null then return;
@@ -911,9 +967,9 @@ extract_state :: ($code: Code) -> Type #compile_time {
                         array_add(*members, it_index_decl);
                     }
                     wrap.members = members;
-                    add_nest(tprint("block_%", index +1), statements, wrap, New(Iterator_Rename), index); // +1 is a hack as for will insert a defer causing this to move down 1
+                    add_nest(tprint("block_%", index), statements, wrap, New(Iterator_Rename), index);
                 } else {
-                    add_nest(tprint("block_%", index +1), statements, insert_code.expansion, iterator_rename, index); // +1 is a hack as for will insert a defer causing this to move down 1
+                    add_nest(tprint("block_%", index), statements, insert_code.expansion, iterator_rename, index);
                 }
             } else {
                 add_state_members(statements, insert_code.expansion, iterator_rename, index);
