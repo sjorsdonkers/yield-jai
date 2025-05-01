@@ -64,8 +64,8 @@ for_expansion :: (routine: Coroutine, body: Code, flags: For_Flags) #expand {
 into_yielding :: (proc: $T, call:= #caller_code) -> Coroutinator #expand #compile_time {
     code :: code_of(proc);
 
-    Args   :: #insert,scope(call) #run,stallable extract_arguments(code);
-    State  :: #insert,scope(call) #run,stallable extract_state(code);
+    #insert,scope(call) #run,stallable extract_arguments(code); // ARGS  :: struct ...
+    #insert,scope(call) #run,stallable extract_state(code);     // STATE :: struct ...
     Output :: #run extract_output(code);
     new_code :: #run,stallable to_statemachine(code);
 
@@ -833,12 +833,12 @@ extract_arguments :: ($code: Code) -> Code #compile_time {
     root := compiler_get_nodes(code); assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
     header := root.(*Code_Procedure_Header); assert(header.body_or_null != null);
 
-    type_root := compiler_get_nodes(#code struct {}).(*Code_Struct);
+    type_root := compiler_get_nodes(#code Args :: struct {}).(*Code_Declaration);
     statements: [..]*Code_Node;
     for header.arguments {
         array_add(*statements, it.(*Code_Node));
     }
-    type_root.block.statements = statements;
+    type_root.expression.(*Code_Struct).block.statements = statements;
     return compiler_get_code(type_root);
 }
 
@@ -1002,11 +1002,11 @@ extract_state :: ($code: Code) -> Co_state:Code #compile_time {
     root, nodes := compiler_get_nodes(code); assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
     header := root.(*Code_Procedure_Header); assert(header.body_or_null != null);
 
-    struct_root := compiler_get_nodes(#code struct {}).(*Code_Struct);
+    struct_root := compiler_get_nodes(#code State :: struct {}).(*Code_Declaration);
 
     statements: [..]*Code_Node;
     add_state_members(*statements, header.body_or_null.block, New(Iterator_Rename));
-    struct_root.block.statements = statements;
+    struct_root.expression.(*Code_Struct).block.statements = statements;
 
     logx(struct_root);
     return compiler_get_code(struct_root);

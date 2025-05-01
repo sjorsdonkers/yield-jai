@@ -137,8 +137,7 @@ for_expansion :: (holder: Holder, body: Code, flags: For_Flags) #expand {
         #insert body;
     }
 }
-#poke_name Coro Holder; // TODO TODO change the implementation such that all code gets inserted in the current scope
 
 #scope_file
-using Coro :: #import,file "../module.jai";
+#import,file "../module.jai";
 #import "Basic";
