@@ -24,11 +24,11 @@ yielder :: (resumable: $R, arguments:..Any, call:= #caller_code) #expand {
     };
 }
 
-init :: ($yielding: Coroutinator) -> $COROUTINE #modify {
+init :: ($yielding: Coroutinator, $call:= #caller_code) -> $COROUTINE #modify {
     COROUTINE = yielding.Coroutine;
     return true;
 } {
-    return.{next=#insert #run yielding.next};
+    return.{next=#insert,scope(call) #run yielding.next};
 }
 
 yield :: (return_value: s64) #expand {
@@ -61,72 +61,72 @@ for_expansion :: (routine: Coroutine, body: Code, flags: For_Flags) #expand {
     }
 }
 
-into_yielding :: (proc: $T) -> Coroutinator #expand #compile_time {
-    return into_yielding_impl(code_of(proc));
+into_yielding :: (proc: $T, call:= #caller_code) -> Coroutinator #expand #compile_time {
+    code :: code_of(proc);
+
+    Args   :: #insert,scope(call) #run,stallable extract_arguments(code);
+    State  :: #insert,scope(call) #run,stallable extract_state(code);
+    Output :: #run extract_output(code);
+    new_code :: #run,stallable to_statemachine(code);
+
+    return Coroutinator.{Coroutine(Args, State, Output), new_code};
 }
 
-into_yielding_impl :: ($code: Code) -> Coroutinator #compile_time {
-    Args   :: #run,stallable extract_arguments(code);
-    State  :: #run extract_state(code);
-    Output :: #run extract_output(code);
+to_statemachine :: ($code: Code) -> Code #compile_time {
+    root, nodes := compiler_get_nodes(code);
+    assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
+    header := root.(*Code_Procedure_Header);
+    original_returns := header.returns;
+    {
+        // Set coroutine as first and only argument. The original arguments should be held in the state and using-ed in the proc
+        self_code := #code self: *COROUTINE;
+        self_decl := compiler_get_nodes(self_code);
+        assert(self_decl.kind == .DECLARATION, "%", self_decl.kind);
 
-    new_code := #run -> Code {
-        root, nodes := compiler_get_nodes(code);
-        assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
-        header := root.(*Code_Procedure_Header);
-        original_returns := header.returns;
-        {
-            // Set coroutine as first and only argument. The original arguments should be held in the state and using-ed in the proc
-            self_code := #code self: *COROUTINE;
-            self_decl := compiler_get_nodes(self_code);
-            assert(self_decl.kind == .DECLARATION, "%", self_decl.kind);
+        arguments: [..] *Code_Declaration;
+        array_add(*arguments, self_decl.(*Code_Declaration));
+        header.arguments = arguments;
 
-            arguments: [..] *Code_Declaration;
-            array_add(*arguments, self_decl.(*Code_Declaration));
-            header.arguments = arguments;
+        // Add Co_Status as first return value
+        status_code := #code status:Co_Status;
+        status_decl := compiler_get_nodes(status_code);
+        assert(status_decl.kind == .DECLARATION, "%", status_decl.kind);
 
-            // Add Co_Status as first return value
-            status_code := #code status:Co_Status;
-            status_decl := compiler_get_nodes(status_code);
-            assert(status_decl.kind == .DECLARATION, "%", status_decl.kind);
-
-            returns: [..] *Code_Declaration;
-            array_add(*returns, status_decl.(*Code_Declaration));
-            for header.returns array_add(*returns, it);
-            header.returns = returns;
-        }
-
-        top_statements: [..]*Code_Node;
-        array_add(*top_statements, compiler_get_nodes(#code using self.arguments;));
-        array_add(*top_statements, compiler_get_nodes(#code using self.state;));
-
-        // Create `while true if self.position == {`
-        loop_node, cases_block := position_switch_node();
-        array_add(*top_statements, loop_node);
-
-        cases: [..]*Code_Node;
-        add_case_default(*cases); // Needed for the always yield case, not sure if we want that
-
-        sub_block := Block_Process.{original = header.body_or_null.block, name = ""};
-        sub_block.set_me_to_case_id = 0;
-        next_available_case_id := 1;
-
-        while has_more(sub_block) {
-            new_block, exit, case_id := process_block(*sub_block, *next_available_case_id);
-            assert(case_id != -1);
-            add_case(*cases, case_id, new_block);
-        }
-        cases_block.statements = cases;
-
-        array_add(*top_statements, default_return(original_returns));
-        header.body_or_null.block.statements = top_statements;
-
-        // Debug
-        logx(root);
-
-        return compiler_get_code(root);
+        returns: [..] *Code_Declaration;
+        array_add(*returns, status_decl.(*Code_Declaration));
+        for header.returns array_add(*returns, it);
+        header.returns = returns;
     }
-    return Coroutinator.{Coroutine(Args, State, Output), new_code};
+
+    top_statements: [..]*Code_Node;
+    array_add(*top_statements, compiler_get_nodes(#code using self.arguments;));
+    array_add(*top_statements, compiler_get_nodes(#code using self.state;));
+
+    // Create `while true if self.position == {`
+    loop_node, cases_block := position_switch_node();
+    array_add(*top_statements, loop_node);
+
+    cases: [..]*Code_Node;
+    add_case_default(*cases); // Needed for the always yield case, not sure if we want that
+
+    sub_block := Block_Process.{original = header.body_or_null.block, name = ""};
+    sub_block.set_me_to_case_id = 0;
+    next_available_case_id := 1;
+
+    while has_more(sub_block) {
+        new_block, exit, case_id := process_block(*sub_block, *next_available_case_id);
+        assert(case_id != -1);
+        add_case(*cases, case_id, new_block);
+    }
+    cases_block.statements = cases;
+
+    array_add(*top_statements, default_return(original_returns));
+    header.body_or_null.block.statements = top_statements;
+
+    // Debug
+    logx(root);
+
+    return compiler_get_code(root);
 }
 
 Block_Exit :: enum { END; NEW_CASE; }
@@ -820,7 +820,7 @@ convert_declaration_to_assignment :: (declaration: *Code_Declaration) -> *Code_N
     return assignment;
 }
 
-extract_output :: ($code: Code) -> Type #compile_time {
+extract_output :: ($code: Code) -> Type #expand #compile_time {
     root, nodes := compiler_get_nodes(code);
     assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
 
@@ -829,26 +829,20 @@ extract_output :: ($code: Code) -> Type #compile_time {
     return get_type(header.returns[0].type_inst.result);
 }
 
-extract_arguments :: ($code: Code) -> Type #compile_time {
-    #insert -> Code {
-        root := compiler_get_nodes(code); assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
-        header := root.(*Code_Procedure_Header); assert(header.body_or_null != null);
+extract_arguments :: ($code: Code) -> Code #compile_time {
+    root := compiler_get_nodes(code); assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
+    header := root.(*Code_Procedure_Header); assert(header.body_or_null != null);
 
-        type_root, type_nodes := compiler_get_nodes(#code Co_args :: struct {});
-        for type_nodes if it.kind == .BLOCK {
-            block := it.(*Code_Block);
-            statements: [..]*Code_Node;
-            for header.arguments {
-                array_add(*statements, it.(*Code_Node));
-            }
-            block.statements = statements;
-        }
-        return compiler_get_code(type_root);
-    };
-    return Co_args;
+    type_root := compiler_get_nodes(#code struct {}).(*Code_Struct);
+    statements: [..]*Code_Node;
+    for header.arguments {
+        array_add(*statements, it.(*Code_Node));
+    }
+    type_root.block.statements = statements;
+    return compiler_get_code(type_root);
 }
 
-extract_state :: ($code: Code) -> Type #compile_time {
+extract_state :: ($code: Code) -> Co_state:Code #compile_time {
     type_only_decl :: (decl: *Code_Declaration) -> *Code_Node {
         if decl.flags & .IS_CONSTANT {
             // Constants need to be in the state as well as they need to be accessible from every yield block
@@ -857,7 +851,7 @@ extract_state :: ($code: Code) -> Type #compile_time {
         }
         if decl.type_inst {
             // We have the Code_Type_Instantiation so we it is easy to build the declaration
-            root := compiler_get_nodes(#code name: i32).(*Code_Declaration); // flags?
+            root := compiler_get_nodes(#code name: s32).(*Code_Declaration); // flags?
             root.name = decl.name;
             root.type_inst = decl.type_inst;
             return root;
@@ -1005,20 +999,17 @@ extract_state :: ($code: Code) -> Type #compile_time {
         }
     }
 
-    Co_state :: #insert #run,stallable -> Code {
-        root, nodes := compiler_get_nodes(code); assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
-        header := root.(*Code_Procedure_Header); assert(header.body_or_null != null);
+    root, nodes := compiler_get_nodes(code); assert(root.kind == .PROCEDURE_HEADER, "%", root.*);
+    header := root.(*Code_Procedure_Header); assert(header.body_or_null != null);
 
-        struct_root := compiler_get_nodes(#code struct {}).(*Code_Struct);
+    struct_root := compiler_get_nodes(#code struct {}).(*Code_Struct);
 
-        statements: [..]*Code_Node;
-        add_state_members(*statements, header.body_or_null.block, New(Iterator_Rename));
-        struct_root.block.statements = statements;
+    statements: [..]*Code_Node;
+    add_state_members(*statements, header.body_or_null.block, New(Iterator_Rename));
+    struct_root.block.statements = statements;
 
-        logx(struct_root);
-        return compiler_get_code(struct_root);
-    };
-    return Co_state;
+    logx(struct_root);
+    return compiler_get_code(struct_root);
 }
 
 Iterator_Rename :: struct {
