@@ -9,8 +9,6 @@
 - Code_Directive_Bytes
 - Code_Directive_Code
 - Code_Directive_Poke_Name
-- Code_Directive_Add_Context
-- Code_Directive_Context_Type
 - Code_Directive_Location
 - Code_Directive_Library
 - Code_Directive_Wildcard
@@ -27,8 +25,7 @@
 - Code_Binary_Operator
 - Code_Directive_Run
 - Code_Directive_Import
-- Code_Context
-- Code_Push_Context
+
 - Code_Directive_Modify
 - Code_Directive_Scope
 - Code_Directive_Module_Parameters
@@ -74,7 +71,6 @@
   1. ifx like in condition
   1. IS_SWITCH_STATEMENT
   1. MARKED_AS_COMPLETE
-  1. Union state structs of all branches (optimization)
 Code_Defer
   1. yields inside deferred block
 Code_For
@@ -106,6 +102,11 @@ Code_Make_Varargs
 Code_Loop_Control
 Code_Type_Definition
 Code_Placeholder
+
+Code_Directive_Add_Context
+Code_Directive_Context_Type
+Code_Context
+Code_Push_Context
 
 # Remove state for code blocks that do not contain yield/return at any level
 # Propagate is_expansion for unbackticked return in nested block

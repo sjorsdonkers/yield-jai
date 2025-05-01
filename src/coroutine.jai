@@ -900,12 +900,19 @@ extract_state :: ($code: Code) -> Type #compile_time {
             }
         case .IF;
             if_block := node.(*Code_If);
+
+            union_statements: [..]*Code_Node; // Silly size optimization, breaks for #through cases
+
             if if_block.then_block != null {
-                add_nest(tprint("then_%", index), statements, if_block.then_block, iterator_rename);
+                add_nest(tprint("then_%", index), *union_statements, if_block.then_block, iterator_rename);
             }
             if if_block.else_block != null {
-                add_nest(tprint("else_%", index), statements, if_block.else_block, iterator_rename);
+                add_nest(tprint("else_%", index), *union_statements, if_block.else_block, iterator_rename);
             }
+
+            root := compiler_get_nodes(#code union {}).(*Code_Struct);
+            root.block.statements = union_statements;
+            array_add(statements, root);
         case .WHILE;
             add_nest(tprint("while_%", index), statements, node.(*Code_While).block, iterator_rename);
         case .FOR;
