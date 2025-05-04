@@ -25,7 +25,6 @@
 - Code_Binary_Operator
 - Code_Directive_Run
 - Code_Directive_Import
-
 - Code_Directive_Modify
 - Code_Directive_Scope
 - Code_Directive_Module_Parameters
@@ -63,18 +62,16 @@
 - Code_Declaration
   1. ifx like in expression
   1. IS_CONSTANT in state!!
-  1. HAS_SCOPE_MODIFIER
+  1. HAS_SCOPE_MODIFIER (Remove requirement to always rewrite sub-blocks just to remove any potential backticks)
   1. IS_UNINITIALIZED
   1. IS_ITERATOR
-  1. usinged 
+  1. using-ed 
 - Code_If
   1. ifx like in condition
-  1. IS_SWITCH_STATEMENT
   1. MARKED_AS_COMPLETE
 Code_Defer
   1. yields inside deferred block
 Code_For
-  1. it_index testing
   1. Do not rename after loop body code has been shadowed
   1. support multiple inserts of loop body code
   1. non-it/it_index backticked statements
@@ -115,3 +112,4 @@ Code_Push_Context
 # Compiler
 Need *Type_info or type -> Code_Type_Instantiation for: `val := 7` to `val: i32`
 Naming error? `Code_For.ident_decl` -> `Code_For.it_decl`
+Code_Case.owning_if always null ?

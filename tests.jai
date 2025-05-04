@@ -8,6 +8,7 @@
     t0 := seconds_since_init();
     test("./examples", "first", args);
     test("./examples", "if", args);
+    test("./examples", "if_case", args);
     test("./examples", "while", args);
     test("./examples", "for", args);
     test("./examples", "defer", args);

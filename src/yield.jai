@@ -144,6 +144,7 @@ Block_Process :: struct {
     original_is_processed := false;
     is_expansion := false;
     iterator_rename: Iterator_Rename;
+    owning_if_condition: *Code_Node; // For if switch statements
 }
 
 new_sub_block :: (block: *Code_Block, name: string, iterator_rename: Iterator_Rename) -> *Block_Process {
@@ -351,55 +352,132 @@ process_block :: (self: *Block_Process, next_available_case_id: *s64) -> *Code_B
         case .IF;
             if_block := stmnt.(*Code_If);
 
-            // case 0;     code before if
-            //             if condition {
-            //                 then code until goto 1
-            //             } else {
-            //                 else code until goto 3
-            //             }
-            //             goto 4;
-            // case 1;     code in then after 1st yield
-            //             goto 2;
-            // case 2;     code in then after 2nd yield till end
-            //             goto 4
-            // case 3;     code in else after yield till end
-            //             goto 4
-            // case 4;     code after if
+            if (if_block.if_flags & .IS_SWITCH_STATEMENT) == 0 {
+                // case 0;     code before if
+                //             if condition {
+                //                 then code until goto 1
+                //             } else {
+                //                 else code until goto 3
+                //             }
+                //             goto 4;
+                // case 1;     code in then after 1st yield
+                //             goto 2;
+                // case 2;     code in then after 2nd yield till end
+                //             goto 4
+                // case 3;     code in else after yield till end
+                //             goto 4
+                // case 4;     code after if
 
-            // Do then block
-            then_exit := Block_Exit.END;
-            if if_block.then_block != null {
+                // Do then block
+                then_exit := Block_Exit.END;
+                if if_block.then_block != null {
+                    assert(self.current_sub_block == null);
+                    self.current_sub_block = new_sub_block(if_block.then_block, tprint("then_%", self.statement_index), self.iterator_rename);
+                    then_block, then_exit=, then_case_id := process_block(self.current_sub_block, next_available_case_id);
+                    assert(then_case_id == -1);
+                    if_block.then_block = then_block;
+                    if then_exit == .END then self.current_sub_block = null;
+                }
+
+                // Do else block
+                else_exit := Block_Exit.END;
+                if if_block.else_block != null {
+                    assert(self.waiting_sub_block == null);
+                    self.waiting_sub_block = new_sub_block(if_block.else_block, tprint("else_%", self.statement_index), self.iterator_rename);
+                    else_block, else_exit=, else_case_id := process_block(self.waiting_sub_block, next_available_case_id);
+                    assert(else_case_id == -1);
+                    if_block.else_block = else_block;
+                    if else_exit == .END then self.waiting_sub_block = null;
+                }
+
+                array_add(*statements, if_block);
+                if then_exit == .END && else_exit == .END {
+                    continue;
+                }
+
+                // We create a case ID (4) such that both branching blocks can jump to the same position
+                after_if_case_id := take_case_id(next_available_case_id);
+                array_add(*statements, set_position_node(after_if_case_id));
+                if self.current_sub_block then self.current_sub_block.after_goto_case_id = after_if_case_id;
+                if self.waiting_sub_block then self.waiting_sub_block.after_goto_case_id = after_if_case_id;
+
+                return_new_block(.NEW_CASE, after_if_case_id);
+            } else {
+                // If switch statement
+                // case 0;     code before if
+                //             switch_through := false;
+                //             if case_condition || switch_through {
+                //                 switch_through = true;
+                //                 then code until goto 1
+                //             }
+                //             goto 2;
+                // case 1;     code in then after 1st yield
+                //             goto 2;
+                // case 2;     if case_condition || switch_through {
+                //                 non yield code
+                //                 goto 3
+                //             }
+                //             if case_condition || switch_through {
+                //                 non yield code
+                //                 goto 3
+                //             }
+                //             goto 3
+                // case 3;     code after if
+
                 assert(self.current_sub_block == null);
-                self.current_sub_block = new_sub_block(if_block.then_block, tprint("then_%", self.statement_index), self.iterator_rename);
-                then_block, then_exit=, then_case_id := process_block(self.current_sub_block, next_available_case_id);
+                self.current_sub_block = new_sub_block(if_block.then_block, "", self.iterator_rename); // The block has no name, but the cases do
+
+                // If a case is done and not #through it will jump here
+                after_if_case_id := take_case_id(next_available_case_id);
+                self.current_sub_block.after_goto_case_id = after_if_case_id;
+                self.current_sub_block.owning_if_condition = if_block.condition;
+
+                then_block, then_exit, then_case_id := process_block(self.current_sub_block, next_available_case_id);
                 assert(then_case_id == -1);
-                if_block.then_block = then_block;
-                if then_exit == .END then self.current_sub_block = null;
-            }
+                assert(then_exit == .NEW_CASE, "New case expected as after_goto_case_id is used for ! #through");
+                if !has_more(self.current_sub_block) self.current_sub_block = null; // TODO Make sub-block tell us if it ENDed
 
-            // Do else block
-            else_exit := Block_Exit.END;
-            if if_block.else_block != null {
-                assert(self.waiting_sub_block == null);
-                self.waiting_sub_block = new_sub_block(if_block.else_block, tprint("else_%", self.statement_index), self.iterator_rename);
-                else_block, else_exit=, else_case_id := process_block(self.waiting_sub_block, next_available_case_id);
-                assert(else_case_id == -1);
-                if_block.else_block = else_block;
-                if else_exit == .END then self.waiting_sub_block = null;
-            }
+                // Every if switch in the same scope uses the same variable
+                array_add(*statements, compiler_get_nodes(#code switch_through = false));
+                array_add(*statements, then_block);
 
-            array_add(*statements, if_block);
-            if then_exit == .END && else_exit == .END {
+                return_new_block(.NEW_CASE, after_if_case_id);
+            }
+        case .CASE;
+            case_stmnt := stmnt.(*Code_Case);
+
+            // The if statement and #through that replaces the case
+            if_stmnt := compiler_get_nodes(#code if left == right || switch_through then { }).(*Code_If);
+            if_stmnt.condition.(*Code_Binary_Operator).left.(*Code_Binary_Operator).left = self.owning_if_condition;
+            if_stmnt.condition.(*Code_Binary_Operator).left.(*Code_Binary_Operator).right = case_stmnt.condition;
+
+            assert(self.current_sub_block == null);
+            self.current_sub_block = new_sub_block(case_stmnt.then_block, tprint("case_%", self.statement_index), self.iterator_rename);
+            ifx case_stmnt.marked_as_fallthrough {
+                // When done open the next case gate
+                array_add(*self.current_sub_block.deferred_statements, compiler_get_nodes(#code switch_through = true));
+            } else {
+                // When done, bail to after if case
+                array_add(*self.current_sub_block.deferred_statements, set_position_node(self.after_goto_case_id));
+                array_add(*self.current_sub_block.deferred_statements, compiler_get_nodes(#code defer continue;)); // Allow sub blocks defer statements to be executed
+            }
+            then_block, then_exit, then_case_id := process_block(self.current_sub_block, next_available_case_id);
+            assert(then_case_id == -1);
+            if_stmnt.then_block = then_block;
+            array_add(*statements, if_stmnt);
+
+            if then_exit == .END {
+                self.current_sub_block = null;
                 continue;
             }
 
-            // We create a case ID (4) such that both branching blocks can jump to the same position
-            after_if_case_id := take_case_id(next_available_case_id);
-            array_add(*statements, set_position_node(after_if_case_id));
-            if self.current_sub_block then self.current_sub_block.after_goto_case_id = after_if_case_id;
-            if self.waiting_sub_block then self.waiting_sub_block.after_goto_case_id = after_if_case_id;
+            // In case the if_condition == false or switch_through == true we need to jump to the next case
+            continue_switch_case_id := take_case_id(next_available_case_id);
+            array_add(*statements, set_position_node(continue_switch_case_id));
+            if case_stmnt.marked_as_fallthrough then self.current_sub_block.after_goto_case_id = continue_switch_case_id;
 
-            return_new_block(.NEW_CASE, after_if_case_id);
+            return_new_block(.NEW_CASE, continue_switch_case_id);
+
         case .WHILE;
             while_stmnt := stmnt.(*Code_While);
 
@@ -895,13 +973,30 @@ extract_state :: ($code: Code) -> Co_state:Code #compile_time {
         case .IF;
             if_block := node.(*Code_If);
 
-            union_statements: [..]*Code_Node; // Silly size optimization, breaks for #through cases
+            union_statements: [..]*Code_Node;
 
-            if if_block.then_block != null {
-                add_nest(tprint("then_%", index), *union_statements, if_block.then_block, iterator_rename);
-            }
-            if if_block.else_block != null {
-                add_nest(tprint("else_%", index), *union_statements, if_block.else_block, iterator_rename);
+            if (if_block.if_flags & .IS_SWITCH_STATEMENT) != 0 {
+                has_switch := false; // switch_through is reused by other switches in the same scope
+                for statements.* if it.kind == .DECLARATION {
+                    if it.(*Code_Declaration).name == "switch_through" {
+                        has_switch = true;
+                        break;
+                    }
+                }
+                if !has_switch then array_add(statements, compiler_get_nodes(#code switch_through: bool));
+
+                assert(if_block.then_block != null);
+                for case_stmnt, case_idx: if_block.then_block.statements{
+                    case_stmnt.(*Code_Case).then_block;
+                    add_nest(tprint("case_%", case_idx), *union_statements, case_stmnt.(*Code_Case).then_block, iterator_rename);
+                }
+            } else {
+                if if_block.then_block != null {
+                    add_nest(tprint("then_%", index), *union_statements, if_block.then_block, iterator_rename);
+                }
+                if if_block.else_block != null {
+                    add_nest(tprint("else_%", index), *union_statements, if_block.else_block, iterator_rename);
+                }
             }
 
             root := compiler_get_nodes(#code union {}).(*Code_Struct);
